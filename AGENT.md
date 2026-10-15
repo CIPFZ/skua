@@ -179,7 +179,7 @@ M0 目标：HLS 适配器跑通，`Timeline` 与证据 A 产出区间，所有�
 
 ### 10.1 工程骨架
 
-- [ ] `pyproject.toml`：包名 `skua`，Python 3.11，依赖 `m3u8`、`av`、`aiohttp`、`numpy`、`pyarrow`、`typer`、`pydantic`（仅用于 CLI 参数）；dev 依赖 `pytest`、`pytest-asyncio`、`ruff`、`mypy`。
+- [ ] `pyproject.toml`：包名 `skua`，Python 3.11，依赖 `m3u8`、`av`、`aiohttp`、`numpy`、`pyarrow`、`typer`；dev 依赖 `pytest`、`pytest-asyncio`、`ruff`、`mypy`。不引入 pydantic。
 - [ ] `ruff.toml`、`mypy` 配置、`.gitignore`（`work/`、`cache/`、`models/*.onnx`、`models/*.pt`、`.env.local`）。
 - [ ] `scripts/fetch_models.sh`（M0 只需脚本框架与 SHA256 清单格式）、`scripts/check_secrets.sh`、`scripts/check_imports.sh`、`scripts/make_synth.py`。
 - [ ] `docs/progress.md` 按里程碑列勾选表；`docs/decisions/ADR-000-template.md`。

@@ -1,6 +1,6 @@
 # Skua：视频广告区间检测与跳过 实现方案（SPEC.md）
 
-> 状态：草案 v0.1，2026-10-15。工作代号 Skua（贼鸥，专门把别人塞进来的东西叼走）。代号可零成本替换。
+> 状态：草案 v0.2，2026-10-15。工作代号 Skua（贼鸥，专门把别人塞进来的东西叼走）。代号可零成本替换。
 > 本文件是"实现方案"：定义数据模型、模块边界、每个模块的具体算法与选型、训练与评测协议、里程碑与验收标准。架构层面的论证见对话记录，不在此重复。
 
 ---
@@ -32,7 +32,7 @@
 ```python
 @dataclass
 class Timeline:
-    media_id: str            # 源的内容哈希（播放列表 URL 规范化 + 首分片哈希）
+    media_id: str            # 播放列表 URL 规范化后的 sha256 前 16 hex（规范化：scheme/host 小写、去默认端口、去 query 与 fragment；本地文件用绝对路径）。只依赖 URL，播放器侧无需下载即可计算；同一内容的不同 URL 由 M1 指纹别名合并（3.4）
     duration: float          # 秒
     fps: float
     shots: list[Shot]
@@ -50,33 +50,35 @@ class Shot:
 class ContainerEvent:
     ts: float
     kind: Literal["pts_jump", "video_params", "audio_params", "pid_change", "bitrate_outlier"]
-    payload: dict
+    payload: dict                          # 必含 unit（所属分片 URI）
 
 @dataclass
 class PlaylistEvent:
     ts: float
     kind: Literal["discontinuity", "key_change", "duration_outlier", "uri_pattern_break", "daterange"]
-    payload: dict
+    payload: dict                          # 必含 unit（所属分片 URI）
 
 @dataclass
-class ShotFeatures:                        # 每镜头一行，写 parquet
+class ShotFeatures:                        # 每镜头一行，写 parquet。struct 之外的字段按里程碑逐步填充，缺失为 None，下游必须能处理 None（对应 --lite 与训练时的特征 mask）
     shot_idx: int
-    struct: np.ndarray                     # 证据 A，约 12 维
-    fp_video_hit: float; fp_audio_hit: float; fp_hit_label: str | None   # 证据 B
-    vis_emb: np.ndarray                    # DINOv2 ViT-S/14，384 维，关键帧均值
-    aud_emb: np.ndarray                    # BEATs，768 维，镜头内窗口均值
-    loudness: np.ndarray                   # LUFS-I、LRA、峰值、静音占比，4 维
-    ood_vis: float; ood_aud: float; face_outlier: float                  # 本集 OOD
-    ocr_flags: np.ndarray                  # 二维码、广告关键词、价格/电话模式，约 6 维
+    struct: np.ndarray                     # 证据 A，10 维（3.3）
+    fp_video_hit: float | None = None; fp_audio_hit: float | None = None; fp_hit_label: str | None = None   # 证据 B（M1）
+    vis_emb: np.ndarray | None = None      # DINOv2 ViT-S/14，384 维，关键帧均值（M2）
+    aud_emb: np.ndarray | None = None      # BEATs，768 维，镜头内窗口均值（M2）
+    loudness: np.ndarray | None = None     # LUFS-I、LRA、峰值、静音占比，4 维（M2）
+    ood_vis: float | None = None; ood_aud: float | None = None; face_outlier: float | None = None   # 本集 OOD（M2）
+    ocr_flags: np.ndarray | None = None    # 二维码、广告关键词、价格/电话模式，约 6 维（M2）
 
 @dataclass
 class Segment:
     start: float; end: float
     label: Literal["content", "ad", "intro", "recap", "outro", "trailer"]
-    confidence: float                      # 校准后的后验
-    evidence: dict                         # 各路证据的贡献，便于调试与用户申诉
+    confidence: float                      # 校准后的后验；golden 标注中固定为 1.0
+    evidence: dict                         # 各路证据的贡献，便于调试与用户申诉；golden 标注中为空
 
 SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
+# version 是同一 media_id 下 skip list 的修订号，从 1 递增；序列化顶层另带 schema_version 元数据（来自 skua/schema.py 的 SCHEMA_VERSION），不属于数据字段。
+# golden 标注文件与 SkipList 使用同一 schema，另加顶层 annotator 与 annotated_at 两个元数据字段，评测即 SkipList 对 SkipList 的区间比对。
 ```
 
 ---
@@ -88,16 +90,18 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 职责：产出解码帧迭代器、PCM 迭代器、容器事件、播放列表事件，统一到一条时间轴。
 
 **HLS 适配器**
+- 文件布局：`playlist.py`（解析与播放列表事件）、`fetch.py`（下载缓存）、`decode.py`（唯一允许 `import av` 的文件：demux 探测、帧与 PCM 迭代器、容器事件）、`timeline.py`（时间轴重建）、`proc.py`（外部进程白名单），`hls.py` 只是门面 `open_hls(src)`，只做编排。adapter 内部的分片表（URI、本地路径、轴偏移）落 `cache/<media_id>/index.json`，不进 schema。
 - 用 `m3u8` 库解析 master/media playlist，选最高码率变体。
-- 分片下载并发 8，落盘缓存到 `cache/<media_id>/segN.ts`，支持断点与边下边检。
-- 时间轴重建：以 `EXTINF` 累加为参考，再用每分片首帧 PTS 校正；遇 `DISCONTINUITY` 时间轴不断，PTS 偏移记入 `pts_jump` 事件。
+- 分片下载并发 8，落盘缓存到 `cache/<media_id>/segN.ts`，`.part` + 原子 rename 实现断点，失败重试 3 次指数退避，支持边下边检。
+- M0 支持 MPEG-TS 与 AES-128（经 libav `crypto:` 协议，不加依赖）；fMP4（`EXT-X-MAP`）、`SAMPLE-AES` 明确报错退出，fMP4 支持在 M1 补齐。需要自定义请求头的源用 `--header`，只从命令行读，不落盘、不写日志。
+- 时间轴重建：以 `EXTINF` 累加为参考，再用每分片首帧 PTS 校正（容差 0.5s，为实现常量非策略参数）；遇 `DISCONTINUITY` 时间轴不断，PTS 在此重锚并记 `pts_jump`（payload 带 `tagged=True`）；无标签的 PTS 跳变记 `pts_jump(tagged=False)`。33-bit PTS 回绕按最近同余代表展开。无法 demux 的分片退化为 EXTINF 长度并告警。
 - 播放列表事件：
-  - `discontinuity`：直接来自 tag。
-  - `duration_outlier`：对 `EXTINF` 做 MAD 鲁棒 z-score，|z| > 3 记事件。
-  - `uri_pattern_break`：把 URI 的 host、路径深度、文件名模板（数字替换为 `#`）做签名，与多数签名不同即记事件。
-  - `key_change`：`EXT-X-KEY` 变化。
-  - `daterange`：`EXT-X-DATERANGE` 带 `SCTE35` 或 `CLASS=ad` 的直接透传（极少见但命中即是真值）。
-- 容器事件：PyAV 逐包读取，比较每个 packet 所属 stream 的 `codec_context` 的 width/height/profile/sample_rate/channels/extradata 哈希，变化即记事件；PID/PMT 变化通过 demuxer 的 stream 列表变化检测。
+  - `discontinuity`：直接来自 tag，作用于其后分片（RFC 8216 §4.3.2.3）。
+  - `duration_outlier`：对 `EXTINF` 做 MAD 鲁棒 z-score，|z| > 3 记事件；最后一个分片不参与也不被判定（HLS 末片合法地短）；MAD = 0 时退回 1.2533 × 平均绝对偏差，仍为 0 则本路不产出事件。
+  - `uri_pattern_break`：先去掉 query 与 fragment，再对 host、路径深度、文件名模板做签名；模板化规则为数字串替换为 `#`，长度 ≥ 8 且含数字的 hex / base64 连续串也替换为 `#`。与多数签名不同即记事件。可靠性门槛：多数签名占分片数不足 60% 时本路整体禁用并告警（签名不可靠时宁可不报）。
+  - `key_change`：`EXT-X-KEY` 变化；首个 KEY 不算变化，之后任何变化（含有无切换）都算。
+  - `daterange`：`EXT-X-DATERANGE` 带 `SCTE35` 或 `CLASS=ad` 的直接透传（极少见但命中即是真值）；覆盖范围从所挂分片起算 `DURATION` 或 `PLANNED-DURATION`，两者皆无只覆盖所挂分片。
+- 容器事件：PyAV 逐包读取。`video_params` 比较解析后的字段（codec、width、height、profile、level、pix_fmt、平均帧率），不比较 extradata 哈希（部分编码器 extradata 抖动会误报）；`audio_params` 比较 codec、sample_rate、channels、profile；`pid_change` 通过 demuxer 的 stream 列表变化检测；`bitrate_outlier` 由 adapter 按分片字节数 / 时长算码率的 MAD z，|z| > 3 时发出，payload 带 z。
 
 **MP4/MKV 适配器（M4）**
 - 容器事件来源改为 edit list、chapter、关键帧间隔离群。播放列表事件为空。
@@ -112,14 +116,19 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 
 ### 3.3 `evidence/structural.py`：证据 A
 
-每镜头特征（约 12 维）：
-- 镜头边界 ±0.5s 内是否有 `discontinuity` / `pts_jump` / `video_params` / `audio_params`（4 个 0/1）。
-- 所覆盖分片的 `duration_outlier` 最大 |z|、`uri_pattern_break` 是否命中、`key_change` 是否命中。
-- 所覆盖分片的平均码率 z-score。
-- 距离最近结构事件的时间（对数）。
-- 若覆盖分片带 `daterange` 广告标记，输出硬标签。
+每镜头特征（10 维，事件归属按"事件 ts 落在镜头起点 ±0.5s"判定，只看起点：RFC 语义下标签作用于其后的分片，这样同一事件不会同时打到前后两个镜头）：
+- 镜头起点是否有 `discontinuity` / `pts_jump` / `video_params` / `audio_params`（4 个 0/1）。
+- 所覆盖分片的 `duration_outlier` 最大 |z|、`uri_pattern_break` 是否命中、`key_change` 是否命中（3 维）。
+- 所覆盖分片的 `bitrate_outlier` 最大 |z|，无则 0（1 维）。
+- 距离最近结构事件的时间 `log1p(秒)`（1 维）。
+- 覆盖分片是否带 `daterange` 广告标记（1 维，同时输出硬标签）。
 
-这一路同时生成"硬约束"：被 `daterange` 标记或同时命中 `discontinuity + video_params + uri_pattern_break` 的分片，直接作为解码器的高置信先验（对数似然加 +4）。
+**硬先验（按"不连续块"而非单分片判定）**
+- 不连续块 = 相邻两个 `discontinuity`（或播放列表首尾）之间的连续分片。
+- 一个块获得 `ad` 硬先验（解码器对数似然 +4）当且仅当同时满足：块起点带 `discontinuity` 与 `video_params`；块内所有分片均命中 `uri_pattern_break`；块总时长 ≤ 180s（SPEC 3.6 广告块先验上界，更长的块更可能是正片换源）；块不是播放列表中时长占比最大的块。
+- 被 `daterange` 标记的范围直接获得硬先验，不受上述条件约束。
+- `uri_pattern_break` 单独永远不构成硬先验；本路被禁用（3.1 的 60% 门槛）时块级硬先验整体失效，只剩 `daterange`。
+- M0 的临时决策器 `rule_decoder.py` 仅把硬先验块输出为 `Segment(label="ad", confidence=0.95)`，M3 由 Semi-Markov 解码替换。
 
 ### 3.4 `evidence/fingerprint.py`：证据 B
 
@@ -134,10 +143,13 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 - 命中：连续 ≥ 3 秒的子指纹比特错误率 < 0.35。
 
 **自匹配规则（无标注产出伪标签）**
+- series / episode 归属由调用方提供（`skua scan --series <id> --episode <n>`，mpv 脚本从文件名或用户配置推断），缺省为未知；未知时只执行"跨 media_id 重复"一条规则。
+- media_id 别名合并：两个 media_id 的镜头指纹互相命中覆盖任一方 ≥ 50% 时长，视为同一内容（同一集的不同 URL、不同会话 token、SSAI 导致的变化），在 `media_alias` 表合并为一个内容身份，此后"跨 media_id"按内容身份计算。该规则优先于下面所有规则执行，是防止"同一集被当成跨剧重复而整集判 ad"的硬保护。
 - 跨 series 重复（不同剧）：`ad` 候选。
 - 同 series 跨 episode 重复，且位于每集相对位置 < 10% 或 > 90%：`intro` / `outro` 候选。
 - 同 series 跨 episode 重复，位于开头 10%–20%，且与上一集后段内容命中：`recap` 候选。
 - 同 series 内与下一集内容命中、位于末尾：`trailer` 候选。
+- 任一规则产出的 `ad` 候选在单集内累计时长不得超过该集总时长的 30%，超过则整集的 B 路候选降级为"待人工确认"并告警，不进入伪标签。
 - 输出：`fp_video_hit` 与 `fp_audio_hit` 为命中强度（0–1），`fp_hit_label` 为规则给出的标签。
 
 **反馈回流**
@@ -156,7 +168,7 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 ### 3.6 `model/`：时序模型与解码
 
 **发射模型**
-- 输入：每镜头拼接特征（struct 12 + fp 3 + vis 384 + aud 768 + loudness 4 + ood 3 + ocr 6 ≈ 1180 维），先各自 LayerNorm 再拼接，线性降到 256。
+- 输入：每镜头拼接特征（struct 10 + fp 3 + vis 384 + aud 768 + loudness 4 + ood 3 + ocr 6 ≈ 1180 维），先各自 LayerNorm 再拼接，线性降到 256；None 字段以零向量加 1 维"缺失"标志位代入。
 - 主干：2 层 BiGRU，隐层 256，dropout 0.3；或 2 层 Transformer encoder（4 头，相对位置编码），镜头数 ≤ 1500 时两者皆可，默认 BiGRU。
 - 输出：每镜头 6 类对数概率 + 1 维"边界"概率（镜头起点是否为区间边界）。
 - 损失：类别交叉熵（类权重：错判 `content → ad` 权重 5，其余 1）+ 边界 BCE。非对称权重直接编码"错跳正片远比多看广告糟糕"。
@@ -182,12 +194,14 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 
 **Golden 集（只评测不训练）**
 - 人工标注 20 集，覆盖 ≥ 4 个来源站点、≥ 3 种剧集类型，边界精度到 0.5s，标签用上述 6 类。标注工具：mpv + Lua 脚本打点导出 JSON。
+- 文件格式与 `SkipList` 同 schema（见第 2 章），一集一个文件 `golden/<media_id>.json`，不含 URL；URL 到 media_id 的映射只存在于项目所有者本机的 `.env.local`。标注协议写在 `golden/PROTOCOL.md`。
+- 最小评测工具 `skua eval --pred <skiplist.json> --gold <golden.json>` 在 M0 批次 8 落地，只实现区间级 P/R/F1 与边界误差。
 
 **指标**
 - 区间级 P/R/F1（IoU ≥ 0.5），按标签分别统计。
 - 边界误差：匹配区间的起止点绝对误差中位数与 P90。
 - 用户代价：每小时错跳正片秒数（目标 < 2s/h）、每小时漏跳广告秒数（目标 < 15s/h）。
-- 消融：A 单独 / A+B / A+B+C / 去掉 OOD / 去掉音频 / 阈值平滑 vs Semi-Markov，每个里程碑跑一遍存入 `reports/`。
+- 消融：A 单独 / A+B / A+B+C / 去掉 OOD / 去掉音频 / 阈值平滑 vs Semi-Markov，每个里程碑跑一遍存入 `docs/reports/`。
 
 ### 3.8 `serve/`：消费端
 
@@ -213,19 +227,22 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 
 ```
 skua/
-  pyproject.toml
+  pyproject.toml  ruff.toml
   skua/
-    adapter/      hls.py  mp4.py  timeline.py
+    schema.py     # 第 2 章 dataclass、SCHEMA_VERSION、to_json/from_json、FEATURE_SCHEMA
+    adapter/      playlist.py  fetch.py  decode.py  timeline.py  proc.py  hls.py(门面)  mp4.py(M4)
     shots/        transnet.py  keyframes.py
-    evidence/     structural.py  fingerprint.py  content.py  ood.py
+    evidence/     structural.py  rule_decoder.py(M0 临时，M3 删除)  fingerprint.py  content.py  ood.py
     model/        emission.py  semimarkov.py  calibrate.py
     train/        pseudo_label.py  dataset.py  train.py  eval.py
     serve/        proxy.py  skiplist.py
-    cli.py        # skua scan <url|file> / skua train / skua eval / skua serve
+    cli.py        # skua scan / eval / train / serve
   mpv/skua.lua
-  models/         # 下载脚本，不入库：transnetv2.onnx dinov2_s.onnx beats.pt rapidocr
-  golden/         # 人工标注 JSON
-  reports/        # 每里程碑消融报告
+  scripts/        fetch_models.sh  check_secrets.sh  check_imports.sh  selftest_checks.sh  make_synth.py
+  models/         # 下载脚本与 SHA256 清单，权重不入库
+  golden/         # 人工标注 JSON + PROTOCOL.md
+  docs/           progress.md  decisions/ADR-*.md  reports/m<N>-<date>.md
+  tests/          每包一个目录 + fixtures/（synth 参数、脱敏的 proc 输出样例）
   work/  cache/   # gitignore
 ```
 
@@ -235,8 +252,8 @@ skua/
 
 | 里程碑 | 交付 | 验收标准 |
 |---|---|---|
-| M0 时间轴 | HLS adapter、Timeline、播放列表/容器事件、`skua scan` 产出证据 A 区间 | 对 golden 中"整分片广告"子集，区间级 P ≥ 0.95，R ≥ 0.7，单集耗时 < 10s |
-| M1 指纹闭环 | pHash + Chromaprint 入库、跨集自匹配、mpv 脚本与反馈回流 | 同一来源第二部剧的广告零标注命中 R ≥ 0.8；用户手动标记一次后同广告再现命中率 100% |
+| M0 时间轴 | HLS adapter、Timeline、播放列表/容器事件、`skua scan` 产出证据 A 区间、最小 `skua eval` | 对 golden 中"整分片广告"子集，区间级 P ≥ 0.95，R ≥ 0.7；单集耗时 < 10s 按热缓存（分片已在 cache/，只计 demux 与分析）计算，冷缓存耗时如实报告但不作门槛 |
+| M1 指纹闭环 | 第一项任务：验证 skip list 时间轴与 mpv `time-pos` 的一致性（含 DISCONTINUITY 与起始偏移），误差 > 0.5s 则先修轴再做指纹。随后 pHash + Chromaprint 入库、media_id 别名合并、跨集自匹配、fMP4 支持、mpv 脚本与反馈回流 | 时间轴与 mpv 误差 ≤ 0.5s；同一来源第二部剧的广告零标注命中 R ≥ 0.8；用户手动标记一次后同广告再现命中率 100% |
 | M2 内容证据 | TransNetV2、DINOv2、BEATs、OOD、OCR 特征全量落 parquet；伪标签生成 | 单集 45 分钟 CPU 特征提取 ≤ 3 分钟；伪标签在 golden 上 P ≥ 0.9 |
 | M3 序列解码 | 发射模型训练、Semi-Markov 解码、校准、消融报告 | golden 全集 `ad` F1 ≥ 0.9，边界 P90 ≤ 1.5s，错跳正片 < 2s/h |
 | M4 在线与扩展 | 代理增量模式、MP4/MKV adapter、lookahead 截断解码 | 边播边检决策领先播放头 ≥ 20s；MP4 本地文件复用 M3 模型 F1 下降 ≤ 0.05 |
@@ -251,3 +268,12 @@ skua/
 - 片头与广告特征相近：靠 6 类标签 + 位置约束 + 跨集同位置重复规则区分，不要退化为二分类。
 - TransNetV2 对动画/低码率源切分不稳：PySceneDetect 兜底，并把"镜头过长（> 60s）"强制按 10s 切分。
 - 人脸与 OCR 模块增加依赖体积：两者均为可选证据，`--lite` 模式下关闭，模型需支持特征缺失（训练时随机 mask 这两组特征）。
+- 许可证：Skua 自身代码 MIT。PyAV 为 BSD，但其 wheel 捆绑的 FFmpeg 可能是 GPL 构建；v1 作为本地工具由用户自行安装依赖、不再分发二进制，不构成阻塞，结论与核实结果记入 ADR-001。若 M5 做单二进制发布，需改用 LGPL 构建的 FFmpeg。
+- SSAI 贴片导致同一集的 media_id 不稳定：media_id 只由 URL 决定（第 2 章），指纹层用 ≥ 50% 覆盖率别名合并（3.4），两道保护缺一不可。
+
+---
+
+## 7. 变更记录
+
+- 2026-10-15 v0.1 草案定稿。
+- 2026-10-15 v0.2 依据 M0 执行计划评审回填：media_id 改为纯 URL 派生；ShotFeatures 非 struct 字段可为 None；struct 定为 10 维且事件只归属镜头起点；硬先验改为不连续块级判定并加 180s 上限与"非最大块"约束；URI 签名增加 hex/base64 模板化与 60% 可靠性门槛；duration_outlier 排除末片并定义 MAD=0 回退；video_params 比较解析字段而非 extradata；M0 范围定为 TS + AES-128，fMP4 移至 M1；新增 media_id 别名合并与单集 ad 占比 30% 保护；golden 与 SkipList 同 schema；报告目录 docs/reports/；M0 耗时按热缓存验收；M1 首项为 mpv 时间轴对齐验证；去掉 pydantic 依赖。
