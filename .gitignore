@@ -1,0 +1,35 @@
+# 本地密钥与真实地址
+.env.local
+
+# 运行产物
+work/
+cache/
+*.parquet
+*.sqlite
+*.sqlite3
+
+# 模型权重（由 scripts/fetch_models.sh 下载）
+models/*.onnx
+models/*.pt
+models/*.pth
+models/*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# 图标中间产物
+assets/icon/pack/_preview-*.png
+assets/icon/skua-icon-pack.zip
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
