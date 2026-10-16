@@ -54,7 +54,7 @@ M0 需要建立 `pyproject.toml` 与 `uv.lock`。AGENT.md 5.1 要求每个第三
 
 ### 许可证
 
-- Skua 自身代码采用 MIT：仓库根目录 `LICENSE`，`pyproject.toml` 中 `license = "MIT"`、`license-files = ["LICENSE"]`。著作权人一栏暂为占位，由项目所有者填写。
+- Skua 自身代码采用 MIT：仓库根目录 `LICENSE`，`pyproject.toml` 中 `license = "MIT"`、`license-files = ["LICENSE"]`。著作权人为 CIPFZ（项目所有者 2026-10-16 指定）。
 - 版本上界取当前大版本，升级大版本需要新的 ADR 或修订本 ADR。
 - **`av <19` 与 `numpy <2.5` 这两个上界是 SPEC 固定 Python 3.11 的派生约束**，不是对这两个库本身的选型限制：`av` 19.x 与 `numpy` 2.5.x 要求 Python ≥ 3.12。将来升级到 Python 3.12 时，这两个上界一并解除，改回"锁当前大版本"的一般规则。
 
