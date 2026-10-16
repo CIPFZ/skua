@@ -2,7 +2,7 @@
 
 更新时间：2026-10-16
 当前里程碑：M0 时间轴与证据 A
-CI 状态：绿。GitHub Actions `ci` Run 1–3（65d903c、2bd86ae、4a5a4bf）均 completed successfully，Run 1 的 14 个步骤全部 success（含 apt 安装 ffmpeg + chromaprint）
+CI 状态：绿至 c324ffa（Run 1–4 均 completed successfully；Run 1 的 14 个步骤全部 success，含 apt 安装 ffmpeg + chromaprint）。批次 2 提交的 CI 结果见汇报
 
 ## M0 条目（对应 AGENT.md 第 10 章，按批次推进；直接提交 main，批次名只用于分组）
 
@@ -12,8 +12,8 @@ CI 状态：绿。GitHub Actions `ci` Run 1–3（65d903c、2bd86ae、4a5a4bf）
 - [x] 10.1c CI：`.github/workflows/ci.yml`
 - [x] 10.1-gate：ADR-001 已批准（2026-10-16）→ `uv sync` → 提交 `uv.lock` → ruff / mypy / pytest 全绿
 
-### 批次 2 schema（10.2）
-- [ ] 10.2 `skua/schema.py`：第 2 章全部 dataclass、`SCHEMA_VERSION = 1`、`to_json` / `from_json`、`FEATURE_SCHEMA`（只含 struct 列）、round-trip 测试与未知字段测试
+### 批次 2 schema（10.2）待验收
+- [x] 10.2 `skua/schema.py`：第 2 章全部 dataclass、`SCHEMA_VERSION = 1`、`to_json` / `from_json`、`FEATURE_SCHEMA`（只含 struct 列）、round-trip 测试与未知字段测试
   - 必须覆盖：ShotFeatures 非 struct 字段为 None 的往返，以及 None 与缺字段两种输入行为一致；顶层 `schema_version` 与 `SkipList.version` 分别测；golden 顶层 `annotator` / `annotated_at` 被接受而不报未知字段
 
 ### 批次 3 proc / synth / playlist（10.3、10.1d）
@@ -44,7 +44,7 @@ CI 状态：绿。GitHub Actions `ci` Run 1–3（65d903c、2bd86ae、4a5a4bf）
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 2 schema：待开始
+- 批次 2 schema：代码与测试完成，待项目所有者验收
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
@@ -54,6 +54,7 @@ CI 状态：绿。GitHub Actions `ci` Run 1–3（65d903c、2bd86ae、4a5a4bf）
 
 ## 开放问题（需项目所有者决策）
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
+- AGENT.md 4.1 的 scope 列表需补 `schema`（项目所有者 2026-10-16 同意新增，AGENT.md 由项目所有者修改）
 
 ## ADR 列表
 - ADR-000 模板
@@ -69,6 +70,12 @@ CI 状态：绿。GitHub Actions `ci` Run 1–3（65d903c、2bd86ae、4a5a4bf）
 - mypy override：`m3u8`、`pyarrow` 无 `py.typed`；`av` 自带类型，严格检查
 - pytest 使用 `--import-mode=importlib`，`pythonpath = ["scripts"]`，检查脚本的纯函数可以直接单测
 - `mypy` 在 CI 中同时检查 `skua` 与 `scripts`
+- schema：JSON 严格解码（未知字段、重复键、NaN/Infinity、bool 当数字、字符串当数字、Literal 大小写不符一律报错）；`to_json` 写出前再解码一次，防止构造后被改成非法状态的对象落盘
+- schema：`ShotFeatures` 可选字段缺失与显式 null 解码结果一致，写出时一律写显式 null；`struct` 必填且不可为 null
+- schema：顶层 `schema_version` 每个文档必填，不在 dataclass 中；`decode()` 返回 `Document(value, schema_version, golden)`，`from_json()` 只返回值。迁移表 `MIGRATIONS[n]` 将 n 升到 n+1，缺一步即报错，比当前新的版本拒绝
+- schema：golden 元数据 `annotator`（非空）与 `annotated_at`（ISO 8601）必须成对出现，只允许出现在 SkipList 上；golden 文件中所有 segment 必须 confidence=1.0、evidence 为空（SPEC 2）
+- schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量
+- schema：`FEATURE_SCHEMA` 的 list 子字段显式命名为 `element` 且不可为 null，因为 parquet 读回时会改名为 `element`，这样读回的 schema 与定义逐字节一致；parquet 元数据带 `skua_schema_version`；写入用 `.part` + 原子 rename；有值但 FEATURE_SCHEMA 中尚无列的字段（M1/M2）拒绝写入，而不是静默丢弃
 
 ## 性能记录
 - 合成 HLS 45 分钟等效，`skua scan` 耗时：待批次 7 测量
@@ -76,4 +83,4 @@ CI 状态：绿。GitHub Actions `ci` Run 1–3（65d903c、2bd86ae、4a5a4bf）
 ## 下次会话从这里继续
 - 工作流程：直接提交 main（AGENT.md 4.1）；推送前过第 7 章清单；推送后用 Actions 页面确认运行通过再汇报；汇报前先 `git ls-remote origin` 确认远端事实状态
 - 本机没有 `gh`，匿名 API 常被限流；改为读取 Actions 网页（`/actions/workflows/ci.yml?query=branch%3Amain` 的 aria-label）确认结果
-- 下一步：批次 2 schema（10.2）
+- 下一步：批次 2 验收后开始批次 3（proc / make_synth / playlist）
