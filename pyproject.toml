@@ -1,0 +1,53 @@
+[project]
+name = "skua"
+version = "0.0.0"
+description = "Ad segment detection and skipping for video streams (HLS first)."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11,<3.12"
+# Version ranges and licenses: docs/decisions/ADR-001-m0-baseline-dependencies.md
+dependencies = [
+    "m3u8>=6.0,<7",
+    "av>=18.1,<19",
+    "aiohttp>=3.14,<4",
+    "numpy>=2.4,<2.5",
+    "pyarrow>=26,<27",
+    "typer>=0.27,<0.28",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1,<10",
+    "pytest-asyncio>=1.4,<2",
+    "ruff>=0.17,<0.18",
+    "mypy>=2.4,<3",
+]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+mypy_path = "."
+
+[[tool.mypy.overrides]]
+# m3u8 and pyarrow 26 ship no py.typed (ADR-001). av ships py.typed and is checked strictly.
+module = ["m3u8", "m3u8.*", "pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib", "-m", "not model"]
+markers = [
+    "model: needs real model weights under models/; skipped by default, run with `uv run pytest -m model`",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

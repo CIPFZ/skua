@@ -1,0 +1,9 @@
+# Skua model weight manifest, read by scripts/fetch_models.sh.
+# One weight file per line, 5 TAB-separated columns:
+#   name      registry key, identical to the model name used in SPEC and skua/models_registry.py
+#   file      path relative to models/ (weights are gitignored, never committed)
+#   sha256    lowercase hex digest of the final file
+#   url       official download location; each new host needs an ADR and a check_secrets allowlist entry
+#   license   SPDX identifier of the weight license; must allow local redistribution (AGENT.md 3)
+# Lines starting with '#' and blank lines are ignored. Adding an entry requires an ADR (AGENT.md 9).
+# M0 uses no model weights, so there are no entries yet.

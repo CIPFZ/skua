@@ -1,0 +1,15 @@
+# Lint and format rules for the whole repository (AGENT.md 5.1).
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+
+[lint.isort]
+known-first-party = ["skua"]
+
+[format]
+quote-style = "double"
+# Markdown: SPEC/AGENT code blocks are owner-controlled prose, not source to be reformatted.
+# make_pack.py: owner-provided icon tooling with intentionally aligned tables; still linted.
+exclude = ["*.md", "assets/icon/make_pack.py"]
