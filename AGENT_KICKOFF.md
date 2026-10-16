@@ -18,7 +18,7 @@
 工作目录是 git@github.com:CIPFZ/skua.git 的 clone，开始任何工作前必须按顺序完整阅读：
 
 1. `CLAUDE.md`：入口与铁律摘要。
-2. `AGENT.md`：工作手册，约 300 行。规定边界禁区、Python 约定、测试规范、PR 清单、汇报与停顿规则、ADR 流程、M0 启动清单。本项目怎么干活以它为准。
+2. `AGENT.md`：工作手册，约 300 行。规定边界禁区、Python 约定、测试规范、推送前检查清单、汇报与停顿规则、ADR 流程、M0 启动清单。本项目怎么干活以它为准。
 3. `SPEC.md`：实现方案，是唯一的方案来源（Single Source of Truth）。先精读第 2 章数据模型与第 5 章里程碑，再精读第 3.1、3.3 节（M0 涉及的模块），其余章节浏览即可。
 4. `assets/icon/`：已定稿的图标包与色板，`README.md` 说明各文件用途。
 5. 本 prompt。若本 prompt 与 AGENT.md 或 SPEC.md 冲突，以 SPEC 为准，其次 AGENT.md，并指出冲突。
