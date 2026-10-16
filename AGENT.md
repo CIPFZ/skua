@@ -40,12 +40,13 @@
 
 ## 4. 仓库约定
 
-### 4.1 分支与提交
+### 4.1 提交
 
-- 主分支 `main`，始终 `uv run pytest` 全绿、`ruff` / `mypy` 零错误。
-- 每个任务一个分支：`m<N>/<topic>`，如 `m0/hls-adapter`、`m1/fingerprint-store`。
+- 所有开发直接提交 `main`，不开分支、不开 PR。
+- `main` 始终可用：每个提交独立构建通过、`uv run pytest` 全绿、`ruff` / `mypy` 零错误。做不到就不提交。
+- 小步提交：一次提交只做一件事；模型权重版本、数据 schema、代码三类变更分开提交。
 - 提交信息：`<scope>: <动词开头的一句话>`，scope 为 `adapter` / `shots` / `evidence` / `model` / `train` / `serve` / `mpv` / `docs` / `ci`。示例：`adapter: 实现 EXTINF 的 MAD 离群事件`。
-- 一次提交只做一件事；模型权重版本、数据 schema、代码三类变更分开提交。
+- 推送后必须确认 GitHub Actions 实际触发并通过，不得仅凭本地结果声称 CI 全绿。
 
 ### 4.2 目录职责速查
 
@@ -143,7 +144,7 @@
 
 ---
 
-## 7. 每个 PR 的检查清单
+## 7. 每次推送前的检查清单
 
 ```
 - [ ] uv run ruff check . && uv run ruff format --check . 通过
@@ -154,6 +155,7 @@
 - [ ] schema 变更已 bump SCHEMA_VERSION 并有迁移测试
 - [ ] 偏离 SPEC 的地方已有 ADR
 - [ ] docs/progress.md 已勾选对应条目
+- [ ] 推送后 GitHub Actions 已实际触发并通过
 ```
 
 ---
