@@ -45,8 +45,9 @@
 - 所有开发直接提交 `main`，不开分支、不开 PR。
 - `main` 始终可用：每个提交独立构建通过、`uv run pytest` 全绿、`ruff` / `mypy` 零错误。做不到就不提交。
 - 小步提交：一次提交只做一件事；模型权重版本、数据 schema、代码三类变更分开提交。
-- 提交信息：`<scope>: <动词开头的一句话>`，scope 为 `adapter` / `shots` / `evidence` / `model` / `train` / `serve` / `mpv` / `docs` / `ci`。示例：`adapter: 实现 EXTINF 的 MAD 离群事件`。
+- 提交信息：`<scope>: <动词开头的一句话>`，scope 为 `schema` / `adapter` / `shots` / `evidence` / `model` / `train` / `serve` / `mpv` / `docs` / `ci`。示例：`adapter: 实现 EXTINF 的 MAD 离群事件`。
 - 推送后必须确认 GitHub Actions 实际触发并通过，不得仅凭本地结果声称 CI 全绿。
+- 一次推送只带一个提交：CI 只对推送的最新提交运行，批量推送会让中间提交绕过 CI。本地干净 clone 的验证不能替代 CI。
 
 ### 4.2 目录职责速查
 

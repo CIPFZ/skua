@@ -78,7 +78,9 @@ class Segment:
 
 SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 # version 是同一 media_id 下 skip list 的修订号，从 1 递增；序列化顶层另带 schema_version 元数据（来自 skua/schema.py 的 SCHEMA_VERSION），不属于数据字段。
+# segments 只存非 content 区间（ad / intro / recap / outro / trailer），按 start 升序且互不重叠；content 是隐含的补集，不写入文件。理由：消费端只关心"要跳什么"，评测按标签统计也不需要 content 区间，且 content 的边界误差没有独立意义。Semi-Markov 解码内部产出全覆盖序列，落盘前丢弃 content 段。
 # golden 标注文件与 SkipList 使用同一 schema，另加顶层 annotator 与 annotated_at 两个元数据字段，评测即 SkipList 对 SkipList 的区间比对。
+# 事件 payload 的 unit 字段标识事件所属的最小源单元：HLS 为分片 URI；无分片概念的容器（MP4/MKV，M4）为 "byte:<start>-<end>"，由适配器保证非空。
 ```
 
 ---
