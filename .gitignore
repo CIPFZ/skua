@@ -8,11 +8,30 @@ cache/
 *.sqlite
 *.sqlite3
 
+# 媒体文件一律不入库（AGENT.md 3），合成素材只生成到临时目录
+*.ts
+*.m4s
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.aac
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.jpg
+*.jpeg
+
+# skua scan 的默认输出
+skiplist.json
+
 # 模型权重（由 scripts/fetch_models.sh 下载）
 models/*.onnx
 models/*.pt
 models/*.pth
 models/*.safetensors
+models/*.part
 
 # Python
 __pycache__/
