@@ -123,7 +123,8 @@ def ad_break_layout(*, same_uri: bool = False) -> list[Part]:
 
 def ad_break_marked_layout() -> list[Part]:
     """ad-break with explicit ad markers: a 10 s ad (4 + 4 + 2 s, so the 2 s segment is a
-    non-final EXTINF outlier) carrying an EXT-X-DATERANGE CLASS="ad"."""
+    non-final EXTINF outlier) and an EXT-X-DATERANGE CLASS="ad" whose tag sits at the head of
+    the playlist (attached to seg000) while its START-DATE points at the ad."""
     c1, c2, ad, c3 = ad_break_layout()
     marked = Part(
         ad.name, ad.kind, 10, ad.size, ad.uri_template, ad.discontinuity,
@@ -354,17 +355,19 @@ def _media_playlist(segments: Sequence[SegmentTruth]) -> str:
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-PLAYLIST-TYPE:VOD",
     ]
-    marked = any(s.daterange is not None for s in segments)
-    for i, seg in enumerate(segments):
-        if seg.discontinuity:
-            lines.append("#EXT-X-DISCONTINUITY")
-        if marked and i == 0:
-            lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{_iso(0.0)}")
-        if seg.daterange is not None:
+    marked = [(i, s) for i, s in enumerate(segments) if s.daterange is not None]
+    if marked:
+        lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{_iso(0.0)}")
+        # All DATERANGE tags sit at the head, attached to the first segment: their START-DATE,
+        # mapped through the PDT, is the only thing that places them (RFC 8216 4.3.2.7).
+        for i, seg in marked:
             lines.append(
                 f'#EXT-X-DATERANGE:ID="{seg.part}-{i}",CLASS="ad",'
                 f'START-DATE="{_iso(seg.start)}",DURATION={seg.daterange:.3f}'
             )
+    for seg in segments:
+        if seg.discontinuity:
+            lines.append("#EXT-X-DISCONTINUITY")
         lines += [f"#EXTINF:{seg.extinf:.6f},", seg.uri]
     lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"

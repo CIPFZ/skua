@@ -37,7 +37,7 @@ def kinds(events: list[PlaylistEvent], kind: str) -> list[tuple[float, str]]:
 
 def media(*entries: str, header: str = "", end: bool = True) -> str:
     """Media playlist from entries: 'D' = discontinuity, 'K:<attrs>' = key, 'R:<attrs>' =
-    daterange, '<dur> <uri>' = segment."""
+    daterange, '#...' = verbatim tag, '<dur> <uri>' = segment."""
     lines = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:10", header]
     for entry in entries:
         if entry == "D":
@@ -46,6 +46,8 @@ def media(*entries: str, header: str = "", end: bool = True) -> str:
             lines.append(f"#EXT-X-KEY:{entry[2:]}")
         elif entry.startswith("R:"):
             lines.append(f"#EXT-X-DATERANGE:{entry[2:]}")
+        elif entry.startswith("#"):
+            lines.append(entry)  # any other tag, verbatim
         else:
             dur, uri = entry.split()
             lines += [f"#EXTINF:{dur},", uri]
@@ -75,6 +77,27 @@ def test_synth_event_sequence(synth_ad_break: SynthResult) -> None:
         (56.0, "uri_pattern_break", "ads/ad014.ts"),
         (60.0, "discontinuity", "seg015.ts"),
     ]
+
+
+def test_synth_daterange_is_placed_by_start_date_not_tag_position(
+    synth_marked: SynthResult,
+) -> None:
+    text = synth_marked.playlist.read_text()
+    lines = text.splitlines()
+    # The tag physically precedes seg000 ...
+    tag = next(i for i, line in enumerate(lines) if line.startswith("#EXT-X-DATERANGE"))
+    assert lines.index("seg000.ts") > tag
+    assert all(not line.startswith("#EXTINF") for line in lines[:tag])
+    # ... yet it covers the ad, because START-DATE is mapped through the PDT.
+    events = parse_media_playlist(text, str(synth_marked.playlist)).events
+    ranges = [e for e in events if e.kind == "daterange"]
+    assert [e.payload["unit"] for e in ranges] == ["ads/ad012.ts", "ads/ad013.ts", "ads/ad014.ts"]
+    assert {e.payload["anchored_by"] for e in ranges} == {"program-date-time"}
+    # Counterfactual: the same playlist without its PDT can only anchor by position.
+    no_pdt = "\n".join(x for x in lines if not x.startswith("#EXT-X-PROGRAM-DATE-TIME")) + "\n"
+    fallback = parse_media_playlist(no_pdt, str(synth_marked.playlist)).events
+    units = [e.payload["unit"] for e in fallback if e.kind == "daterange"]
+    assert units == ["seg000.ts", "seg001.ts", "seg002.ts"]
 
 
 def test_synth_marked_daterange_and_duration_outlier(synth_marked: SynthResult) -> None:
@@ -338,6 +361,91 @@ def test_daterange_without_duration_covers_anchor_only() -> None:
     events = [e for e in parse_media_playlist(text, BASE).events if e.kind == "daterange"]
     assert [(e.ts, e.payload["unit"]) for e in events] == [(4.0, "seg000.ts")]
     assert events[0].payload["scte35"] == ["out"] and events[0].payload["class"] is None
+
+
+def ranges(text: str) -> list[PlaylistEvent]:
+    return [e for e in parse_media_playlist(text, BASE).events if e.kind == "daterange"]
+
+
+def at(seconds: int, offset: str = "Z") -> str:
+    return f"2026-01-01T00:00:{seconds:02d}.000{offset}"
+
+
+def test_daterange_start_date_wins_over_tag_position() -> None:
+    # Tag attached to seg000, START-DATE pointing into seg002 (PDT 00:00:00 on seg000).
+    tag = f'R:ID="x",CLASS="ad",START-DATE="{at(9)}",DURATION=6'
+    events = ranges(media(tag, *segs(5), header=PDT))
+    assert [(e.ts, e.payload["unit"]) for e in events] == [(8.0, "seg002.ts"), (12.0, "seg003.ts")]
+    assert events[0].payload["anchor"] == "seg002.ts"
+    assert events[0].payload["anchored_by"] == "program-date-time"
+
+
+def test_daterange_follows_pdt_jump_at_discontinuity() -> None:
+    # The second epoch restarts the wall clock one hour later; START-DATE lands in it.
+    text = media(
+        "4.0 a.ts",
+        "4.0 b.ts",
+        "D",
+        "#EXT-X-PROGRAM-DATE-TIME:2026-01-01T01:00:00.000Z",
+        'R:ID="x",CLASS="ad",START-DATE="2026-01-01T01:00:04.000Z",DURATION=4',
+        "4.0 c.ts",
+        "4.0 d.ts",
+        "4.0 e.ts",
+        header=PDT,
+    )
+    assert [(e.ts, e.payload["unit"]) for e in ranges(text)] == [(12.0, "d.ts")]
+
+
+def test_daterange_without_pdt_falls_back_to_tag_position() -> None:
+    tag = f'R:ID="x",CLASS="ad",START-DATE="{at(9)}",DURATION=6'
+    events = ranges(media("4.0 a.ts", tag, *segs(4)))
+    assert [e.payload["unit"] for e in events] == ["seg000.ts", "seg001.ts"]
+    assert events[0].payload["anchored_by"] == "position"
+
+
+@pytest.mark.parametrize(
+    ("attrs", "units", "source"),
+    [
+        (f'DURATION=4,END-DATE="{at(16)}",PLANNED-DURATION=20', ["seg001.ts"], "DURATION"),
+        (
+            f'END-DATE="{at(16)}",PLANNED-DURATION=20',
+            ["seg001.ts", "seg002.ts", "seg003.ts"],
+            "END-DATE",
+        ),
+        ("PLANNED-DURATION=8", ["seg001.ts", "seg002.ts"], "PLANNED-DURATION"),
+        ("SCTE35-OUT=0xFC", ["seg001.ts"], None),
+        ("DURATION=0", ["seg001.ts"], "DURATION"),
+    ],
+    ids=["duration-first", "end-date", "planned", "none", "zero-is-a-point"],
+)
+def test_daterange_span_priority(attrs: str, units: list[str], source: str | None) -> None:
+    tag = f'R:ID="x",CLASS="ad",START-DATE="{at(4)}",{attrs}'
+    events = ranges(media(tag, *segs(6), header=PDT))
+    assert [e.payload["unit"] for e in events] == units
+    assert {e.payload["duration_source"] for e in events} == {source}
+
+
+def test_daterange_outside_playlist_or_without_offset_is_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    outside = 'R:ID="x",CLASS="ad",START-DATE="2026-01-02T00:00:00.000Z",DURATION=4'
+    assert ranges(media(outside, *segs(3), header=PDT)) == []
+    assert "maps to no segment" in caplog.text
+    naive = 'R:ID="y",CLASS="ad",START-DATE="2026-01-01T00:00:04.000",DURATION=4'
+    assert ranges(media(naive, *segs(3), header=PDT)) == []
+    assert "lacks a usable offset" in caplog.text
+
+
+def test_segments_before_first_pdt_are_not_mappable() -> None:
+    text = media(
+        "4.0 pre0.ts",
+        "4.0 pre1.ts",
+        "#EXT-X-PROGRAM-DATE-TIME:2026-01-01T00:00:00.000Z",
+        'R:ID="x",CLASS="ad",START-DATE="2025-12-31T23:59:56.000Z",DURATION=8',
+        *segs(2),
+    )
+    # Only the part of the range that reaches PDT-mapped segments counts.
+    assert [e.payload["unit"] for e in ranges(text)] == ["seg000.ts"]
 
 
 def test_daterange_without_ad_marker_is_ignored() -> None:

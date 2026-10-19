@@ -1,6 +1,6 @@
 # Skua 开发进度
 
-更新时间：2026-10-19
+更新时间：2026-10-19（SPEC v0.3）
 当前里程碑：M0 时间轴与证据 A
 CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每次推送确认对应 Run 通过
 
@@ -44,7 +44,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 3 全部完成（10.3a、Q2、10.1d、10.3b），待项目所有者验收
+- 批次 3 已验收；SPEC v0.3 修正：DATERANGE 按 PDT 锚定（已完成）→ URI 按词模板化 → 批次 4
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
@@ -54,9 +54,6 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - `check_imports` 只防误用不防恶意：`getattr(os, "system")` 一类反射调用抓不到（项目所有者 2026-10-16 接受）
 
 ## 开放问题（需项目所有者决策）
-- （批次 6 之前必须裁定，影响错跳）只带 `SCTE35-IN` 的 EXT-X-DATERANGE 是否算"daterange 广告标记"。playlist.py 按 SPEC 字面全部上报，payload `scte35` 记录 out/cmd/in，取舍留给 structural
-- （批次 6 之前裁定）DATERANGE 只有 END-DATE、没有 DURATION / PLANNED-DURATION 时，SPEC 字面是只覆盖所挂分片，当前按字面实现（覆盖少，偏安全）
-- （影响召回，不影响错跳）base64 模板化按 SPEC 字面实现：`[A-Za-z0-9+=]` 连续串 ≥ 8 且含数字整体变 `#`，所以 `segment00012.ts` 与 `advert00012.ts` 会得到同一模板，URI 断裂漏报
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
 
 ## ADR 列表
@@ -82,8 +79,10 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：robust z 用标准定义 `(x - median) / (1.4826 × MAD)`，1.4826 是使 MAD 在正态下等于 σ 的一致性常数，不是调参项；MAD = 0 时按 SPEC 退回 `1.2533 × mean|x - median|`
 - playlist：URI 签名中的 host 只以 8 位哈希出现，目录名只计深度、不参与模板；本地路径的 host 记为 `local`
 - playlist：除 SPEC 列出的 fMP4、SAMPLE-AES 外，以下输入也直接报错：无 EXT-X-ENDLIST（直播，SPEC 0 不做）、EXT-X-BYTERANGE、未知 KEY METHOD、非正 EXTINF、无分片
+- playlist（SPEC v0.3）：DATERANGE 有 PDT 时按 START-DATE 经 PDT 映射到分片（m3u8 库的 `current_program_date_time` 沿分片累加，遇新 PDT 重置），标签位置不作数；整个列表无 PDT 才按标签所挂分片锚定。payload 新增 `anchored_by`（program-date-time / position）与 `duration_source`（DURATION / END-DATE / PLANNED-DURATION / null）
+- playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
-- 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例
+- 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
 - 合成素材：编码器策略见 AGENT.md 6.1（项目所有者 2026-10-19 决定，mpeg2video 为默认，h264 组为 CI 增量，探测链不含 libopenh264）。EXTINF 取段内视频帧数 / fps，不用 segment 封装器 csv 的时间（它差一帧）；PTS 偏移用 segment 封装器的 `-initial_offset`（`-output_ts_offset` 会让切点错位）；内层 mpegts 选项须经 `-segment_format_options` 传入
 - schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量
 - schema：`FEATURE_SCHEMA` 的 list 子字段显式命名为 `element` 且不可为 null，因为 parquet 读回时会改名为 `element`，这样读回的 schema 与定义逐字节一致；parquet 元数据带 `skua_schema_version`；写入用 `.part` + 原子 rename；有值但 FEATURE_SCHEMA 中尚无列的字段（M1/M2）拒绝写入，而不是静默丢弃

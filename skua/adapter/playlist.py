@@ -13,6 +13,7 @@ import statistics
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -228,14 +229,72 @@ def _key_changes(segments: Sequence[PlaylistSegment]) -> list[PlaylistEvent]:
     ]
 
 
+def _parse_date(value: object) -> datetime | None:
+    """ISO 8601 / RFC 3339 date-time with an offset; anything else is unusable (None)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _span(dr: Any) -> tuple[float | None, str | None]:
+    """Range length in seconds and its source, in RFC 8216 4.3.2.7 order (SPEC 3.1)."""
+    if dr.duration is not None:
+        return float(dr.duration), "DURATION"
+    start, end = _parse_date(dr.start_date), _parse_date(dr.end_date)
+    if start is not None and end is not None:
+        return (end - start).total_seconds(), "END-DATE"
+    if dr.planned_duration is not None:
+        return float(dr.planned_duration), "PLANNED-DURATION"
+    return None, None
+
+
+def _covered_by_wall_clock(
+    start: datetime,
+    span: float | None,
+    segments: Sequence[PlaylistSegment],
+    walls: Sequence[datetime | None],
+) -> list[PlaylistSegment]:
+    covered = []
+    for seg, wall in zip(segments, walls, strict=True):
+        if wall is None:
+            continue  # before the first PROGRAM-DATE-TIME: not mappable
+        begin = (wall - start).total_seconds()  # segment start relative to START-DATE
+        if span is None or span <= 0:
+            # A point (no length, or DURATION=0): the segment containing START-DATE.
+            if begin <= _EPS and begin + seg.duration > _EPS:
+                covered.append(seg)
+        elif begin < span - _EPS and begin + seg.duration > _EPS:
+            covered.append(seg)
+    return covered
+
+
+def _covered_by_position(
+    i: int, span: float | None, segments: Sequence[PlaylistSegment]
+) -> list[PlaylistSegment]:
+    anchor = segments[i]
+    if span is None or span <= 0:
+        return [anchor]
+    end = anchor.start + span
+    return [s for s in segments[i:] if s.start < end - _EPS]
+
+
 def _dateranges(
     pl: Any, segments: Sequence[PlaylistSegment], config: PlaylistConfig
 ) -> list[PlaylistEvent]:
     """One event per covered segment for every DATERANGE with CLASS=ad or any SCTE35 attribute.
 
+    START-DATE is wall-clock time: with EXT-X-PROGRAM-DATE-TIME present it is mapped onto
+    segments through the PDT timeline and the tag's position is ignored (RFC 8216 4.3.2.7);
+    only a playlist without any PDT falls back to the segment the tag precedes (SPEC 3.1).
     Facts only: which SCTE35 attributes are present is kept in the payload; deciding which of
-    them become hard labels is evidence/structural's job.
+    them become hard labels is evidence/structural's job (SPEC 3.3).
     """
+    walls: list[datetime | None] = [raw.current_program_date_time for raw in pl.segments]
+    has_pdt = any(w is not None for w in walls)
     events: list[PlaylistEvent] = []
     for i, raw in enumerate(pl.segments):
         for dr in raw.dateranges or []:
@@ -244,13 +303,20 @@ def _dateranges(
             is_ad_class = klass is not None and klass.lower() == config.daterange_ad_class
             if not (is_ad_class or scte35):
                 continue
-            anchor = segments[i]
-            span = dr.duration if dr.duration is not None else dr.planned_duration
-            if span is None:
-                covered = [anchor]  # neither DURATION nor PLANNED-DURATION (SPEC 3.1)
+            span, span_source = _span(dr)
+            if has_pdt:
+                start = _parse_date(dr.start_date)
+                if start is None or any(w is not None and w.tzinfo is None for w in walls):
+                    log.warning("DATERANGE skipped: START-DATE or PDT lacks a usable offset")
+                    continue
+                covered = _covered_by_wall_clock(start, span, segments, walls)
+                anchored_by = "program-date-time"
             else:
-                end = anchor.start + float(span)
-                covered = [s for s in segments[i:] if s.start < end - _EPS]
+                covered = _covered_by_position(i, span, segments)
+                anchored_by = "position"
+            if not covered:
+                log.warning("DATERANGE skipped: START-DATE maps to no segment of this playlist")
+                continue
             for seg in covered:
                 events.append(
                     PlaylistEvent(
@@ -261,8 +327,10 @@ def _dateranges(
                             "id": dr.id,
                             "class": klass,
                             "scte35": scte35,
-                            "anchor": anchor.uri,
-                            "duration": None if span is None else float(span),
+                            "anchor": covered[0].uri,
+                            "anchored_by": anchored_by,
+                            "duration": span,
+                            "duration_source": span_source,
                         },
                     )
                 )
