@@ -33,7 +33,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 
 ### 批次 6 structural（10.4）
 - [x] 10.4a `evidence/structural.py`：10 维 struct（列序 `STRUCT_FIELDS`）、块级与 daterange 硬先验（`hard_prior: dict[shot_idx, float]`）及其来源 `PriorRange`
-- [ ] 10.4b `evidence/rule_decoder.py`（M3 删除）
+- [x] 10.4b `evidence/rule_decoder.py`（M3 删除）：连续硬先验镜头合并为 `Segment(label="ad", confidence=0.95)`；`evidence` = {decoder, hard_prior, sources[]}，每个来源含 source / first_unit / last_unit / duration_s，块来源另含 conditions（起点 discontinuity、起点 video_params、uri 命中数、分片数、≤180 s、是否最大块），daterange 来源另含 daterange（id / class / scte35 / anchored_by / duration_source / closed_by_scte35_in）；测试断言各层字段集合
 
 ### 批次 7 cli / serve（10.5）
 - [ ] 10.5a `cli.py`：`skua scan` 的 `--out` 与 `--json-events`
@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 6 进行中：structural.py 已完成；下一项 rule_decoder.py
+- 批次 6 全部完成（SPEC 3.1 两项修正、structural.py、rule_decoder.py），待项目所有者验收
 
 ## 已知问题
 - 2026-10-19 Run 26–27 红：`test_struct_vectors` 写死了本机合成素材的"距最近事件"值，CI（ffmpeg 6.1）的合成码率略有不同，第 2 个镜头起点多出一个事件。已改为由测试从 Timeline 事件独立重算码率相关维度，结构维度仍写死（AGENT.md 6.1：基础测试集不得依赖编码器的具体字节）。CI 新增"失败用例转注解"步骤，匿名可在运行页读到失败断言
@@ -122,4 +122,4 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 ## 下次会话从这里继续
 - 工作流程：直接提交 main（AGENT.md 4.1）；推送前过第 7 章清单；推送后用 Actions 页面确认运行通过再汇报；汇报前先 `git ls-remote origin` 确认远端事实状态
 - 本机没有 `gh`，匿名 API 常被限流；改为读取 Actions 网页（`/actions/workflows/ci.yml?query=branch%3Amain` 的 aria-label）确认结果
-- 下一步：批次 3 验收后开始批次 4（fetch / decode）
+- 下一步：批次 6 验收后开始批次 7（cli scan / serve skiplist / 端到端）
