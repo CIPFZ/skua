@@ -38,7 +38,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 ### 批次 7 cli / serve（10.5）
 - [x] 10.5a `cli.py`：`skua scan <src> --out` / `--json-events` / `--header`（可重复）/ `--cache-dir`；stdout 只有一个 JSON 文档（默认 SkipList，`--json-events` 时为 Timeline），stderr 打印分阶段耗时与冷/热缓存；退出码 0–5 按 SPEC 3.8
 - [x] 10.5b `serve/skiplist.py`：SQLite 表 `skiplist(media_id, version, schema_version, created_at, body_json)`，主键 (media_id, version)，重写自动 version + 1、旧版本保留、默认读最大 version（SPEC 3.8）；`skua scan --db` 每次扫描写入一版，`--out` 与 stdout 中的 version 即存储分配的版本
-- [ ] 10.5c 端到端测试：区间误差 ≤ 一个分片
+- [x] 10.5c 端到端测试（`tests/test_e2e.py`，经 127.0.0.1 HTTP 跑 `skua scan` 全流程）：ad-break 恰好一个 ad 区间、误差 ≤ 一个分片、来源 block；ad-break-same-uri 零区间；ad-break-marked 有 daterange 来源（PDT 锚定）；AES 布局与 h264 组同样断言
 
 ### 批次 8 验收（10.6）
 - [ ] 10.6a `golden/PROTOCOL.md` 与最小 `skua eval`
@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 7 进行中：struct 带符号 z、cli.py、serve/skiplist.py 已完成；下一项端到端测试
+- 批次 7 全部完成（带符号 z、cli.py、serve/skiplist.py、端到端），待项目所有者验收；批次 8 草案（golden/PROTOCOL.md、skua eval）待准备
 
 ## 已知问题
 - M0 已知限制（SPEC 3.3）：广告块本身是播放列表中最长块的源（短片配长广告）拿不到块级先验，只能靠 daterange；golden 验收报告中单列
@@ -120,9 +120,9 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - schema：`FEATURE_SCHEMA` 的 list 子字段显式命名为 `element` 且不可为 null，因为 parquet 读回时会改名为 `element`，这样读回的 schema 与定义逐字节一致；parquet 元数据带 `skua_schema_version`；写入用 `.part` + 原子 rename；有值但 FEATURE_SCHEMA 中尚无列的字段（M1/M2）拒绝写入，而不是静默丢弃
 
 ## 性能记录
-- 合成 HLS 45 分钟等效，`skua scan` 耗时：待批次 7 测量
+- 合成 HLS 84 s（21 片），本机热缓存 `skua scan`：analysis ≈ 0.044 s、evidence ≈ 0.001 s、total ≈ 0.05 s（2026-10-19）。45 分钟等效与真实源耗时在批次 8 报告中测量
 
 ## 下次会话从这里继续
 - 工作流程：直接提交 main（AGENT.md 4.1）；推送前过第 7 章清单；推送后用 Actions 页面确认运行通过再汇报；汇报前先 `git ls-remote origin` 确认远端事实状态
 - 本机没有 `gh`，匿名 API 常被限流；改为读取 Actions 网页（`/actions/workflows/ci.yml?query=branch%3Amain` 的 aria-label）确认结果
-- 下一步：批次 6 验收后开始批次 7（cli scan / serve skiplist / 端到端）
+- 下一步：批次 7 验收；准备批次 8 草案（golden/PROTOCOL.md、最小 skua eval），真实源由项目所有者提供
