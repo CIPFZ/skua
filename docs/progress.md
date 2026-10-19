@@ -1,8 +1,8 @@
 # Skua 开发进度
 
-更新时间：2026-10-16
+更新时间：2026-10-19
 当前里程碑：M0 时间轴与证据 A
-CI 状态：绿至 c324ffa（Run 1–4 均 completed successfully；Run 1 的 14 个步骤全部 success，含 apt 安装 ffmpeg + chromaprint）。批次 2 提交的 CI 结果见汇报
+CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每次推送确认对应 Run 通过
 
 ## M0 条目（对应 AGENT.md 第 10 章，按批次推进；直接提交 main，批次名只用于分组）
 
@@ -12,12 +12,12 @@ CI 状态：绿至 c324ffa（Run 1–4 均 completed successfully；Run 1 的 14
 - [x] 10.1c CI：`.github/workflows/ci.yml`
 - [x] 10.1-gate：ADR-001 已批准（2026-10-16）→ `uv sync` → 提交 `uv.lock` → ruff / mypy / pytest 全绿
 
-### 批次 2 schema（10.2）待验收
+### 批次 2 schema（10.2）✅ 项目所有者 2026-10-16 验收
 - [x] 10.2 `skua/schema.py`：第 2 章全部 dataclass、`SCHEMA_VERSION = 1`、`to_json` / `from_json`、`FEATURE_SCHEMA`（只含 struct 列）、round-trip 测试与未知字段测试
   - 必须覆盖：ShotFeatures 非 struct 字段为 None 的往返，以及 None 与缺字段两种输入行为一致；顶层 `schema_version` 与 `SkipList.version` 分别测；golden 顶层 `annotator` / `annotated_at` 被接受而不报未知字段
 
 ### 批次 3 proc / synth / playlist（10.3、10.1d）
-- [ ] 10.3a `adapter/proc.py`：`AllowedCommand`（FFMPEG、FFPROBE）与 `run`
+- [x] 10.3a `adapter/proc.py`：`AllowedCommand`（FFMPEG、FFPROBE）与 `run`；参数只收 list[str]、stdin 关闭、超时强杀、错误信息与日志不含 URL（`redact_urls` / `host_hash`）
 - [ ] 10.1d `scripts/make_synth.py`
 - [ ] 10.3b `adapter/playlist.py`：五种 PlaylistEvent 与签名函数
 
@@ -44,17 +44,17 @@ CI 状态：绿至 c324ffa（Run 1–4 均 completed successfully；Run 1 的 14
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 2 schema：代码与测试完成，待项目所有者验收
+- 批次 3：10.3a 完成；10.1d `make_synth.py` 因本机无可用 H.264 编码器而阻塞，等待项目所有者决策（见开放问题）
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
-- 本机 ffmpeg 7.0.2 只有 libopenh264 编码器，CI（ubuntu-24.04 apt）为 libx264。`make_synth.py` 需要探测可用编码器（批次 3），且两种编码器都要在测试中实际跑过：本机跑 libopenh264，CI 跑 libx264
+- 本机 ffmpeg 7.0.2 是 `--enable-libopenh264-dlopen` 构建：`-encoders` 列出 libopenh264，但运行时缺 `libopenh264.so.7`，实际无法编码；本机也没有 libx264；TencentOS 4 的 dnf 源中没有 openh264 包。本机实测可用的视频编码器只有 mpeg2video、mpeg4、libaom-av1、libsvtav1。结论：编码器探测必须靠试编码，不能只读 `-encoders` 列表
 - PyAV 18.x 捆绑 FFmpeg 8.x，系统 ffprobe 是 7.x，±1 帧对比可能存在系统偏差（M0 风险 7，ADR-001）
 - `check_imports` 只防误用不防恶意：`getattr(os, "system")` 一类反射调用抓不到（项目所有者 2026-10-16 接受）
 
 ## 开放问题（需项目所有者决策）
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
-- AGENT.md 4.1 的 scope 列表需补 `schema`（项目所有者 2026-10-16 同意新增，AGENT.md 由项目所有者修改）
+- 本机合成 H.264 测试素材的方案（阻塞 10.1d），选项见 2026-10-19 汇报
 
 ## ADR 列表
 - ADR-000 模板
