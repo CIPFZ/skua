@@ -94,7 +94,7 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 **HLS 适配器**
 - 文件布局：`playlist.py`（解析与播放列表事件）、`fetch.py`（下载缓存）、`decode.py`（唯一允许 `import av` 的文件：demux 探测、帧与 PCM 迭代器、容器事件）、`timeline.py`（时间轴重建）、`proc.py`（外部进程白名单），`hls.py` 只是门面 `open_hls(src)`，只做编排。adapter 内部的分片表（URI、本地路径、轴偏移）落 `cache/<media_id>/index.json`，不进 schema。
 - 用 `m3u8` 库解析 master/media playlist，选最高码率变体。
-- 分片下载并发 8，落盘缓存到 `cache/<media_id>/segN.ts`，`.part` + 原子 rename 实现断点，失败重试 3 次指数退避，支持边下边检。
+- 分片下载并发 8，落盘缓存到 `cache/<media_id>/segN.ts`，`.part` + 原子 rename 实现断点，失败重试 3 次指数退避，支持边下边检。加密分片以原始密文落盘，解密只在 decode 读取时经 libav `crypto:` 协议在内存中进行；密钥与 IV 只存在于内存，不落盘、不进日志、不进 `index.json`。IV 缺省时按 RFC 8216 §5.2 取分片 `EXT-X-MEDIA-SEQUENCE` 序号的大端 128 位值。
 - M0 支持 MPEG-TS 与 AES-128（经 libav `crypto:` 协议，不加依赖）；fMP4（`EXT-X-MAP`）、`SAMPLE-AES`、`EXT-X-BYTERANGE`、直播列表（无 `ENDLIST`）、未知 `KEY METHOD` 一律明确报错退出。fMP4 与 BYTERANGE 在 M1 一起补齐（fMP4 源常用 BYTERANGE）。需要自定义请求头的源用 `--header`，只从命令行读，不落盘、不写日志。
 - 时间轴重建：以 `EXTINF` 累加为参考，再用每分片首帧 PTS 校正（容差 0.5s，为实现常量非策略参数）；遇 `DISCONTINUITY` 时间轴不断，PTS 在此重锚并记 `pts_jump`（payload 带 `tagged=True`）；无标签的 PTS 跳变记 `pts_jump(tagged=False)`。33-bit PTS 回绕按最近同余代表展开。无法 demux 的分片退化为 EXTINF 长度并告警。
 - 播放列表事件：

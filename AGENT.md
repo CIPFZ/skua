@@ -124,6 +124,7 @@
 - 合成素材的视频编码器默认 `mpeg2video`（所有 ffmpeg 构建自带，支持 B 帧，MPEG-2 in TS 是标准组合），音频 ffmpeg 内置 `aac`。基础测试集在任何环境下使用同一编码器、断言同一结果，不按环境切换断言。
 - H.264 特有的检查（profile / level / SPS 解析、`video_params` 对 H.264 字段的比较）单独成组，打 `@pytest.mark.h264`，`libx264` 不可用时跳过；CI 必须安装 libx264 并执行该组，本地跳过不算失败。
 - 编码器可用性必须通过实际编码一小段来探测，不能只看 `ffmpeg -encoders` 列表（dlopen 构建会列出但运行时缺库）。探测结果写入合成产物旁的 `manifest.json` 并打印到 stderr。
+- 合成产物目录以 `make_synth.py` 的内容哈希 + 布局参数作为键，脚本一变旧目录自动失效；测试不得读取未经当前脚本生成的残留目录。
 - 不在本机私装 ffmpeg、编码器库或任何外部二进制来凑测试环境；环境差异一律通过标记与跳过表达。
 - 合成 HLS：`make_synth.py` 同时产出 m3u8 与分片，由 `tests/conftest.py` 用本地 `aiohttp` 服务器在 `127.0.0.1` 随机端口托管。
 - 模型相关测试默认用 `FakeEmbedder`（确定性哈希到向量）；带真实权重的测试标记 `@pytest.mark.model`，CI 默认跳过，本地 `uv run pytest -m model` 跑。
@@ -133,7 +134,7 @@
 | 变更类型 | 必写 |
 |---|---|
 | 新播放列表 / 容器事件 | 合成 HLS 正例 + 不触发的反例 |
-| 时间轴重建 | 含 `DISCONTINUITY` 与 PTS 回绕的合成流，断言镜头时间与 ffprobe 一致（±1 帧）。ffprobe 即使加 `-correct_ts_overflow 0` 在回绕点附近仍会把个别包显示成 `2^33 + x`，真值比较一律按模 `2^33` 进行，样例见 `tests/fixtures/proc/ffprobe_segment_wrap.json` |
+| 时间轴重建 | 含 `DISCONTINUITY` 与 PTS 回绕的合成流。真值由 PyAV 读出的原始 PTS 经独立纯函数计算得到（不经 timeline.py），断言镜头时间一致（±1 帧，按模 `2^33` 比较）；ffprobe 只做一次交叉校验，不作为 CI 真值，避免 ffprobe 版本差异成为测试噪声。ffprobe 即使加 `-correct_ts_overflow 0` 在回绕点附近仍会把个别包显示成 `2^33 + x`，样例见 `tests/fixtures/proc/ffprobe_segment_wrap.json` |
 | 指纹匹配 | 同素材转码（码率减半、重缩放、响度 +6 dB）后仍命中；不同素材不命中 |
 | 自匹配规则 | 构造三部合成"剧"，断言 ad / intro / outro / recap / trailer 五类标签各至少一例正确 |
 | 发射模型 | 固定 seed 过拟合 10 条样本至 loss < 0.05（管线正确性）；输入特征缺失（OCR / 人脸 mask）不崩 |
