@@ -32,7 +32,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [x] 10.3f 合成 HLS 事件序列 / 时间轴 / PTS 回绕测试：真值由 PyAV 原始 PTS 经测试内独立纯函数推出，ffprobe 交叉校验一次，误差 ±1 帧（AGENT.md 6.2）；h264 组在 CI 上执行同样的断言
 
 ### 批次 6 structural（10.4）
-- [ ] 10.4a `evidence/structural.py`：10 维 struct 与块级 `hard_prior`
+- [x] 10.4a `evidence/structural.py`：10 维 struct（列序 `STRUCT_FIELDS`）、块级与 daterange 硬先验（`hard_prior: dict[shot_idx, float]`）及其来源 `PriorRange`
 - [ ] 10.4b `evidence/rule_decoder.py`（M3 删除）
 
 ### 批次 7 cli / serve（10.5）
@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- SPEC 3.1 修正（CRC 按 KEY 范围升级、bitrate 基准排除块首片）已完成；下一步批次 6 structural.py → rule_decoder.py
+- 批次 6 进行中：structural.py 已完成；下一项 rule_decoder.py
 
 ## 已知问题
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
@@ -57,6 +57,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - `check_imports` 只防误用不防恶意：`getattr(os, "system")` 一类反射调用抓不到（项目所有者 2026-10-16 接受）
 
 ## 开放问题（需项目所有者决策）
+- （影响错跳，structural 已按保守一侧实现，待确认）同一 DATERANGE 同时带 CLASS=ad 与 SCTE35-IN 时不构成硬先验（SPEC "IN 永不构成硬先验"优先）
+- （特征口径，待确认）struct 第 9 维 daterange_marker：广告标记（CLASS=ad / OUT，含被 IN 截断后延伸的范围之外的锚点本身）与 SCTE35-CMD 记 1，只带 SCTE35-IN 记 0
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
 
 ## ADR 列表
@@ -87,6 +89,11 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
+- structural：只读 Timeline；分片之间靠 unit 关联。块 = 起点 unit 带 discontinuity 事件的镜头开始的一段；块起点的 discontinuity / video_params 按 unit 判断，struct 前 4 维按"事件 ts 在镜头起点 ±0.5 s"判断（SPEC 3.3）；duration / bitrate 取所覆盖 unit 的最大 |z|
+- structural：URI 签名被禁用时不产出任何 uri_pattern_break，"块内所有分片均命中"自然不成立，块级先验因此整体失效，与 SPEC 3.3 等价，不需额外标志
+- structural：几个块并列最长时都算"最大块"（先验更少，偏保守）；首个块没有 discontinuity，永远得不到块级先验
+- structural：无时长的 SCTE35-OUT 由其后第一个同 ID 的 SCTE35-IN 截断（没有同 ID 的就取其后第一个 IN），范围到 IN 所在镜头之前为止；其后没有 IN 时只覆盖锚点镜头
+- structural：struct 第 8 维 = log1p(镜头起点到最近任何事件 ts 的秒数)，整个 Timeline 没有事件时取 log1p(duration)
 - hls / decode：AES-CBC 用错 IV 只破坏首个 16 字节块，libav 会越过它重新同步，demux 照样成功——错 IV 本来是静默的。decode 对每个加密分片单独读取解密后的首个 TS 包（PyAV `data` 格式读原始字节），校验其中 PSI 表段（PID ≤ 0x1F）的 CRC32/MPEG-2（`check_decrypted_head`，读取失败也算失败）。这个检查独立于 demux：错的密钥通常连 PKCS7 填充都通不过、demux 直接失败，若把检查放在 demux 之后就会漏计
 - hls（SPEC 3.1）：KEY 范围 = 连续且 EXT-X-KEY 完全相同的分片段；同一范围内 CRC 失败 ≥ 2 片（`HlsConfig.crc_failures_to_abort`）时 `open_hls` 抛 `AesIntegrityError`，消息给出分片区间、媒体序号区间与脱敏后的 KEY URI；恰好 1 片失败只告警，并在 index.json 记 `head_crc_ok=false`（清流分片与无可校验表段的分片为 null），M1 指纹入库须跳过 false 的分片。注意：只覆盖一个分片的 KEY 范围最多失败 1 片，按规则永远不会升级
 - hls：KEY URI 相对于所选媒体播放列表解析（`KeyState.absolute_uri`），同一 URI 只取一次；密钥长度不是 16 字节或取不到时直接报错，不退化
