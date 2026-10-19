@@ -42,6 +42,9 @@ jobs:
           uv run mypy scripts
 
       - name: Pytest
+        env:
+          # libx264 comes with the apt ffmpeg; a skipped h264 group fails the run here.
+          SKUA_REQUIRE_H264: "1"
         run: uv run pytest
 
       - name: Check secrets

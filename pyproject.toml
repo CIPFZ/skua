@@ -48,6 +48,7 @@ pythonpath = ["scripts"]
 addopts = ["-ra", "--strict-markers", "--import-mode=importlib", "-m", "not model"]
 markers = [
     "model: needs real model weights under models/; skipped by default, run with `uv run pytest -m model`",
+    "h264: H.264-specific checks with libx264; skipped when unavailable, mandatory in CI (AGENT.md 6.1)",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

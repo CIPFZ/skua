@@ -1,0 +1,114 @@
+{
+  "packets": [
+    {
+      "stream_index": 0,
+      "pts": 8589884192,
+      "dts": 8589880592,
+      "flags": "K__",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 0,
+      "pts": 8589894992,
+      "dts": 8589884192,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 0,
+      "pts": 8589887792,
+      "dts": 8589887792,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 0,
+      "pts": 8589891392,
+      "dts": 8589891392,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 1,
+      "pts": 8589882272,
+      "dts": 8589882272,
+      "flags": "K__",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 1,
+      "pts": 8589884192,
+      "dts": 8589884192,
+      "flags": "K__"
+    },
+    {
+      "stream_index": 0,
+      "pts": 8589938192,
+      "dts": 8589927392,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 0,
+      "pts": 8589930992,
+      "dts": 8589930992,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 0,
+      "pts": 0,
+      "dts": 0,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "stream_index": 0,
+      "pts": 14400,
+      "dts": 3600,
+      "flags": "___",
+      "side_data_list": [
+        {}
+      ]
+    }
+  ],
+  "streams": [
+    {
+      "index": 0,
+      "codec_name": "mpeg2video",
+      "profile": "Main",
+      "codec_type": "video",
+      "width": 320,
+      "height": 180,
+      "id": "0x100",
+      "side_data_list": [
+        {}
+      ]
+    },
+    {
+      "index": 1,
+      "codec_name": "aac",
+      "profile": "LC",
+      "codec_type": "audio",
+      "sample_rate": "48000",
+      "channels": 2,
+      "id": "0x101"
+    }
+  ]
+}

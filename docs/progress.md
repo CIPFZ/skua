@@ -18,7 +18,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 
 ### 批次 3 proc / synth / playlist（10.3、10.1d）
 - [x] 10.3a `adapter/proc.py`：`AllowedCommand`（FFMPEG、FFPROBE）与 `run`；参数只收 list[str]、stdin 关闭、超时强杀、错误信息与日志不含 URL（`redact_urls` / `host_hash`）
-- [ ] 10.1d `scripts/make_synth.py`
+- [x] 10.1d `scripts/make_synth.py`：mpeg2video + aac 合成 C1 | D C2 | D AD | D C3（AD 换分辨率 / PID / URI 模板，C3 内发生 33 位回绕），另有 same-uri 反例与 tiny 布局；试编码探测结果打印到 stderr 并写入 `manifest.json`；`@pytest.mark.h264` 组用 libx264 断言同样的结构，CI 设 `SKUA_REQUIRE_H264=1`，该组若被跳过即判失败
 - [ ] 10.3b `adapter/playlist.py`：五种 PlaylistEvent 与签名函数
 
 ### 批次 4 fetch / decode（10.3）
@@ -44,17 +44,17 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 3：10.3a 完成；10.1d `make_synth.py` 因本机无可用 H.264 编码器而阻塞，等待项目所有者决策（见开放问题）
+- 批次 3：10.3a、Q2（SkipList 拒绝 content）、10.1d 完成；下一项 10.3b playlist.py
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
 - 本机 ffmpeg 7.0.2 是 `--enable-libopenh264-dlopen` 构建：`-encoders` 列出 libopenh264，但运行时缺 `libopenh264.so.7`，实际无法编码；本机也没有 libx264；TencentOS 4 的 dnf 源中没有 openh264 包。本机实测可用的视频编码器只有 mpeg2video、mpeg4、libaom-av1、libsvtav1。结论：编码器探测必须靠试编码，不能只读 `-encoders` 列表
+- ffprobe（7.0.2）加 `-correct_ts_overflow 0` 后，回绕点附近个别包仍被展开成 2^33 + x，其后的包又是原始值：ffprobe 的时间戳不是一致的原始 33 位值，批次 5 拿 ffprobe 当真值时必须按模 2^33 比较（样例见 `tests/fixtures/proc/ffprobe_segment_wrap.json`）
 - PyAV 18.x 捆绑 FFmpeg 8.x，系统 ffprobe 是 7.x，±1 帧对比可能存在系统偏差（M0 风险 7，ADR-001）
 - `check_imports` 只防误用不防恶意：`getattr(os, "system")` 一类反射调用抓不到（项目所有者 2026-10-16 接受）
 
 ## 开放问题（需项目所有者决策）
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
-- 本机合成 H.264 测试素材的方案（阻塞 10.1d），选项见 2026-10-19 汇报
 
 ## ADR 列表
 - ADR-000 模板
@@ -75,6 +75,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - schema：顶层 `schema_version` 每个文档必填，不在 dataclass 中；`decode()` 返回 `Document(value, schema_version, golden)`，`from_json()` 只返回值。迁移表 `MIGRATIONS[n]` 将 n 升到 n+1，缺一步即报错，比当前新的版本拒绝
 - schema：golden 元数据 `annotator`（非空）与 `annotated_at`（ISO 8601）必须成对出现，只允许出现在 SkipList 上；golden 文件中所有 segment 必须 confidence=1.0、evidence 为空（SPEC 2）
 - schema：SkipList 拒绝 `content` 区间（SPEC 2 v0.2：content 是隐含补集，不落盘），`Segment` 本身仍允许 6 类标签。**未升 SCHEMA_VERSION，唯一理由是 v1 格式尚未被任何非测试代码写到磁盘**；以后同类"只是收紧校验"的改动，只要已有落盘文件就必须升版本并写迁移（项目所有者 2026-10-19 决定）
+- 合成素材：编码器策略见 AGENT.md 6.1（项目所有者 2026-10-19 决定，mpeg2video 为默认，h264 组为 CI 增量，探测链不含 libopenh264）。EXTINF 取段内视频帧数 / fps，不用 segment 封装器 csv 的时间（它差一帧）；PTS 偏移用 segment 封装器的 `-initial_offset`（`-output_ts_offset` 会让切点错位）；内层 mpegts 选项须经 `-segment_format_options` 传入
 - schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量
 - schema：`FEATURE_SCHEMA` 的 list 子字段显式命名为 `element` 且不可为 null，因为 parquet 读回时会改名为 `element`，这样读回的 schema 与定义逐字节一致；parquet 元数据带 `skua_schema_version`；写入用 `.part` + 原子 rename；有值但 FEATURE_SCHEMA 中尚无列的字段（M1/M2）拒绝写入，而不是静默丢弃
 
