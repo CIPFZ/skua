@@ -61,6 +61,21 @@ class SynthConfig:
 
 
 @dataclass(frozen=True)
+class AesKey:
+    """An AES-128 test key (not a secret). ``iv`` None means the RFC 8216 5.2 implicit IV,
+    i.e. the segment's media sequence number as a 128-bit big-endian integer."""
+
+    name: str  # key file is keys/<name>.key
+    key_hex: str  # 32 hex chars
+    iv: str | None = None  # explicit IV attribute, "0x" + 32 hex chars
+
+
+# Deterministic, public test keys.
+TEST_KEY_1 = AesKey("k1", "000102030405060708090a0b0c0d0e0f", "0x" + "00" * 15 + "2a")
+TEST_KEY_2 = AesKey("k2", "101112131415161718191a1b1c1d1e1f")
+
+
+@dataclass(frozen=True)
 class Part:
     """A run of segments from one synthetic source; the playlist is a sequence of parts."""
 
@@ -75,6 +90,7 @@ class Part:
     sample_rate: int = 48_000
     channels: int = 2
     daterange: bool = False  # EXT-X-DATERANGE CLASS="ad" spanning the part, on its first segment
+    key: AesKey | None = None  # AES-128 encrypt every segment of the part
 
 
 @dataclass(frozen=True)
@@ -89,6 +105,11 @@ class SegmentTruth:
     start: float  # on the EXTINF-accumulated axis, seconds
     bytes: int
     daterange: float | None = None  # DURATION of a CLASS="ad" DATERANGE attached here
+    sequence: int = 0  # media sequence number (EXT-X-MEDIA-SEQUENCE is 0)
+    key_uri: str | None = None  # EXT-X-KEY URI in effect, None = clear
+    key_iv: str | None = None  # explicit IV attribute in effect, None = implicit
+    iv_hex: str | None = None  # IV actually used to encrypt this segment (32 hex chars)
+    key_hex: str | None = None
 
 
 # --- layouts --------------------------------------------------------------------------------
@@ -133,6 +154,18 @@ def ad_break_marked_layout() -> list[Part]:
     return [c1, c2, marked, c3]
 
 
+def ad_break_aes_layout() -> list[Part]:
+    """ad-break with AES-128: C1 and C2 share key k1 (explicit IV), the ad is clear, C3 uses k2
+    with the implicit IV. key_change is expected at the ad and at C3, not at C2."""
+    c1, c2, ad, c3 = ad_break_layout()
+    return [
+        replace(c1, key=TEST_KEY_1),
+        replace(c2, key=TEST_KEY_1),
+        ad,
+        replace(c3, key=TEST_KEY_2),
+    ]
+
+
 def tiny_layout() -> list[Part]:
     """One content segment and one ad segment; for fast CLI and encoder tests."""
     return [
@@ -145,6 +178,7 @@ LAYOUTS = {
     "ad-break": ad_break_layout,
     "ad-break-same-uri": lambda: ad_break_layout(same_uri=True),
     "ad-break-marked": ad_break_marked_layout,
+    "ad-break-aes": ad_break_aes_layout,
     "tiny": tiny_layout,
 }
 
@@ -270,10 +304,33 @@ def parse_ffprobe_segment(text: str) -> SegmentProbe:
     return SegmentProbe(streams, packets)
 
 
-def probe_segment(path: Path) -> SegmentProbe:
-    """Run ffprobe on one segment file."""
-    result = run(AllowedCommand.FFPROBE, [*FFPROBE_SEGMENT_ARGS, str(path)], timeout_s=60)
+def probe_segment(
+    path: Path, *, key_hex: str | None = None, iv_hex: str | None = None
+) -> SegmentProbe:
+    """Run ffprobe on one segment file, decrypting through libav's crypto: protocol if keyed."""
+    target = [str(path)]
+    if key_hex is not None:
+        target = ["-decryption_key", key_hex, "-decryption_iv", iv_hex or "", f"crypto:{path}"]
+    result = run(AllowedCommand.FFPROBE, [*FFPROBE_SEGMENT_ARGS, *target], timeout_s=60)
     return parse_ffprobe_segment(result.stdout.decode())
+
+
+def _encrypt_segment(path: Path, key: AesKey, iv_hex: str) -> None:
+    """AES-128-CBC + PKCS7 in place, byte-exact, via libav's crypto: protocol in write mode.
+
+    The ``data`` demuxer/muxer pair moves the file as opaque bytes. A stream-copy remux would
+    be simpler but is not faithful: with -copyts, ffmpeg 7.0 rewrote timestamps of segments
+    close to the 33-bit wrap.
+    """
+    tmp = path.with_name(path.name + ".enc")
+    args = [
+        "-nostdin", "-hide_banner", "-loglevel", "fatal", "-y",
+        "-f", "data", "-i", str(path), "-map", "0", "-c", "copy",
+        "-f", "data", "-encryption_key", key.key_hex, "-encryption_iv", iv_hex,
+        f"crypto:{tmp}",
+    ]  # fmt: skip
+    run(AllowedCommand.FFMPEG, args, timeout_s=ENCODE_TIMEOUT_S)
+    tmp.replace(path)
 
 
 def _sources(part: Part, cfg: SynthConfig) -> tuple[str, str]:
@@ -346,6 +403,20 @@ def _iso(offset_s: float) -> str:
     return f"2026-01-01T{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}Z"
 
 
+def _write_key(out_dir: Path, key: AesKey) -> str:
+    uri = f"keys/{key.name}.key"
+    path = out_dir / uri
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes.fromhex(key.key_hex))
+    return uri
+
+
+def _iv_hex(key: AesKey, sequence: int) -> str:
+    if key.iv is not None:
+        return key.iv.removeprefix("0x").removeprefix("0X")
+    return f"{sequence:032x}"  # RFC 8216 5.2: media sequence number, big-endian
+
+
 def _media_playlist(segments: Sequence[SegmentTruth]) -> str:
     target = math.ceil(max((s.extinf for s in segments), default=1.0))
     lines = [
@@ -365,9 +436,17 @@ def _media_playlist(segments: Sequence[SegmentTruth]) -> str:
                 f'#EXT-X-DATERANGE:ID="{seg.part}-{i}",CLASS="ad",'
                 f'START-DATE="{_iso(seg.start)}",DURATION={seg.daterange:.3f}'
             )
+    key_state: tuple[str | None, str | None] = (None, None)
     for seg in segments:
         if seg.discontinuity:
             lines.append("#EXT-X-DISCONTINUITY")
+        if (seg.key_uri, seg.key_iv) != key_state:
+            if seg.key_uri is None:
+                lines.append("#EXT-X-KEY:METHOD=NONE")
+            else:
+                iv = f",IV={seg.key_iv}" if seg.key_iv else ""
+                lines.append(f'#EXT-X-KEY:METHOD=AES-128,URI="{seg.key_uri}"{iv}')
+            key_state = (seg.key_uri, seg.key_iv)
         lines += [f"#EXTINF:{seg.extinf:.6f},", seg.uri]
     lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"
@@ -430,9 +509,15 @@ def synthesize(
         for i, uri in enumerate(uris):
             # EXTINF = whole frames in the segment; exact because keyframes are forced on the
             # segment grid (the segment muxer's own csv times are off by one frame).
-            probe = probe_segment(out_dir / uri)
+            probe = probe_segment(out_dir / uri)  # plaintext view, the truth for decoders
             probes.append(probe)
             extinf = len(probe.video_packets) / cfg.fps
+            sequence = len(segments)
+            key_uri = iv_hex = None
+            if part.key is not None:
+                key_uri = _write_key(out_dir, part.key)
+                iv_hex = _iv_hex(part.key, sequence)
+                _encrypt_segment(out_dir / uri, part.key, iv_hex)
             segments.append(
                 SegmentTruth(
                     uri=uri,
@@ -442,6 +527,11 @@ def synthesize(
                     extinf=extinf,
                     start=clock,
                     bytes=(out_dir / uri).stat().st_size,
+                    sequence=sequence,
+                    key_uri=key_uri,
+                    key_iv=part.key.iv if part.key else None,
+                    iv_hex=iv_hex,
+                    key_hex=part.key.key_hex if part.key else None,
                 )
             )
             clock += extinf

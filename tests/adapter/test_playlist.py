@@ -129,12 +129,21 @@ def test_synth_unmarked_has_no_daterange_key_change_or_outlier(
         assert kinds(events, kind) == [], kind
 
 
+def test_synth_aes_key_changes(synth_aes: SynthResult) -> None:
+    events = parse_file(synth_aes.playlist)
+    # C2 inherits k1 across the discontinuity: no change there; the clear ad and k2 are changes.
+    assert kinds(events, "key_change") == [(48.0, "ads/ad012.ts"), (60.0, "seg015.ts")]
+    methods = [e.payload["method"] for e in events if e.kind == "key_change"]
+    assert methods == ["NONE", "AES-128"]
+
+
 def test_every_event_kind_has_a_synthetic_positive(
-    synth_ad_break: SynthResult, synth_marked: SynthResult
+    synth_ad_break: SynthResult, synth_marked: SynthResult, synth_aes: SynthResult
 ) -> None:
-    seen = {e.kind for e in parse_file(synth_ad_break.playlist) + parse_file(synth_marked.playlist)}
-    assert seen | {"key_change"} == set(PLAYLIST_EVENT_KINDS)
-    # key_change needs AES-128 segments; make_synth does not encrypt, covered by text tests.
+    all_events = [
+        e for r in (synth_ad_break, synth_marked, synth_aes) for e in parse_file(r.playlist)
+    ]
+    assert {e.kind for e in all_events} == set(PLAYLIST_EVENT_KINDS)
 
 
 # --- master playlist -------------------------------------------------------------------------

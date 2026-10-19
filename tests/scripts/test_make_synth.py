@@ -192,6 +192,32 @@ def test_refuses_non_empty_output_dir(tmp_path: Path) -> None:
         synthesize(tmp_path, layout="tiny")
 
 
+def test_aes_segments_decrypt_to_the_plaintext_probe(synth_aes: SynthResult) -> None:
+    for truth, plain in zip(synth_aes.segments, synth_aes.probes, strict=True):
+        path = synth_aes.out_dir / truth.uri
+        if truth.key_uri is None:
+            assert truth.part == "ad" and truth.iv_hex is None
+            assert probe_segment(path) == plain
+            continue
+        # Encrypted bytes are not a transport stream; decrypted they are the original one.
+        data = path.read_bytes()
+        assert data[0] != 0x47 and len(data) % 16 == 0, truth.uri  # PKCS7-padded blocks
+        assert probe_segment(path, key_hex=truth.key_hex, iv_hex=truth.iv_hex) == plain
+
+
+def test_aes_key_and_iv_layout(synth_aes: SynthResult) -> None:
+    segs = synth_aes.segments
+    assert {s.key_uri for s in segs[:12]} == {"keys/k1.key"}
+    assert {s.key_iv for s in segs[:12]} == {"0x" + "00" * 15 + "2a"}
+    assert all(s.key_uri is None for s in segs[12:15])
+    assert {s.key_uri for s in segs[15:]} == {"keys/k2.key"}
+    # Implicit IV = media sequence number (RFC 8216 5.2).
+    assert [s.iv_hex for s in segs[15:]] == [f"{n:032x}" for n in range(15, 21)]
+    assert (synth_aes.out_dir / "keys" / "k1.key").read_bytes() == bytes(range(16))
+    text = synth_aes.playlist.read_text()
+    assert text.count("#EXT-X-KEY:") == 3  # k1 once (C2 inherits it), NONE, k2
+
+
 # --- h264 group: CI increment, skipped locally when libx264 is unavailable ------------------
 
 

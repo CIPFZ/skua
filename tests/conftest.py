@@ -49,6 +49,12 @@ def synth_marked(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
 
 
 @pytest.fixture(scope="session")
+def synth_aes(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+    """ad-break with AES-128: C1, C2 on key k1 (explicit IV), clear ad, C3 on k2 (implicit IV)."""
+    return synthesize(tmp_path_factory.mktemp("synth") / "aes", layout="ad-break-aes")
+
+
+@pytest.fixture(scope="session")
 def synth_h264(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
     """ad-break layout in libx264; skipped locally when unavailable, a failure in CI."""
     if not probe_encoder(H264_ENCODER):
