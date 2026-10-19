@@ -38,7 +38,8 @@ class PlaylistConfig:
     # not a tuning knob: it makes the scale equal sigma for normal data.
     mad_to_sigma: float = 1.4826
     meanad_to_sigma: float = 1.2533  # SPEC 3.1 fallback when MAD = 0 (mean |x - median|)
-    template_min_len: int = 8  # SPEC 3.1: hex / base64 runs of >= 8 chars become '#'
+    hex_word_min_len: int = 8  # SPEC 3.1: a whole word of >= 8 hex chars becomes '#'
+    base64_word_min_len: int = 16  # SPEC 3.1: whole mixed-case base64 word of >= 16 chars -> '#'
     signature_majority_min: float = 0.6  # SPEC 3.1: below this the URI signal is disabled
     daterange_ad_class: str = "ad"  # SPEC 3.1: EXT-X-DATERANGE CLASS=ad
 
@@ -48,8 +49,10 @@ CONFIG = PlaylistConfig()
 _UNSUPPORTED_KEY_METHODS = frozenset({"SAMPLE-AES", "SAMPLE-AES-CTR"})
 _SUPPORTED_KEY_METHODS = frozenset({"AES-128"})
 _DIGITS = re.compile(r"[0-9]+")
-# Base64 alphabet without '/', which cannot occur inside a file name; hex is a subset of it.
-_B64_RUN = re.compile(r"[A-Za-z0-9+=]+")
+_WORD_SEPARATORS = re.compile(r"([-_.])")  # SPEC 3.1; the separators themselves are kept
+_HEX_WORD = re.compile(r"[0-9A-Fa-f]+")
+# Base64 alphabet without '/', which cannot occur inside a file name.
+_BASE64_WORD = re.compile(r"[A-Za-z0-9+=]+")
 _SCTE35_ATTRS = (("scte35_out", "out"), ("scte35_cmd", "cmd"), ("scte35_in", "in"))
 _EPS = 1e-6  # float slack when comparing EXTINF sums
 
@@ -112,17 +115,30 @@ def select_variant(text: str, base_uri: str) -> str:
 # --- URI signature (uri_pattern_break) ------------------------------------------------------
 
 
+def _word_template(word: str, config: PlaylistConfig) -> str:
+    if len(word) >= config.hex_word_min_len and _HEX_WORD.fullmatch(word):
+        return "#"
+    if (
+        len(word) >= config.base64_word_min_len
+        and _BASE64_WORD.fullmatch(word)
+        and any(c.isupper() for c in word)
+        and any(c.islower() for c in word)
+    ):
+        return "#"
+    return _DIGITS.sub("#", word)
+
+
 def filename_template(name: str, config: PlaylistConfig = CONFIG) -> str:
-    """Template of a file name: hex / base64 runs of >= N chars with a digit, then digit runs,
-    become '#' (SPEC 3.1)."""
+    """Template of a file name, word by word (SPEC 3.1 v0.3).
 
-    def hashy(m: re.Match[str]) -> str:
-        run = m.group(0)
-        if len(run) >= config.template_min_len and any(c.isdigit() for c in run):
-            return "#"
-        return run
-
-    return _DIGITS.sub("#", _B64_RUN.sub(hashy, name))
+    Words are split on '-', '_' and '.'; a whole hex word of >= 8 chars or a whole mixed-case
+    base64 word of >= 16 chars becomes '#'; any other word only has its digit runs replaced, so
+    ``segment00012`` -> ``segment#`` and ``advert00012`` -> ``advert#`` stay distinct.
+    """
+    return "".join(
+        part if _WORD_SEPARATORS.fullmatch(part) else _word_template(part, config)
+        for part in _WORD_SEPARATORS.split(name)
+    )
 
 
 def uri_signature(absolute_uri: str, config: PlaylistConfig = CONFIG) -> str:

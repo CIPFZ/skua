@@ -180,15 +180,36 @@ def test_select_variant_rejects_media_playlist() -> None:
         ("seg001.ts", "seg#.ts"),
         ("segment_12_720p.ts", "segment_#_#p.ts"),
         ("index0.ts", "index#.ts"),
-        ("3f9a1c2b7d.ts", "#.ts"),  # hex run >= 8 with a digit
-        ("a1B2c3D4e5==.ts", "#.ts"),  # base64 run >= 8 with a digit
-        ("deadbeef.ts", "deadbeef.ts"),  # 8 hex letters but no digit: a word, kept
-        ("abc123.ts", "abc#.ts"),  # short run: only digits become '#'
+        # The SPEC 3.1 v0.3 pair: digits glued to a word no longer swallow the word.
+        ("segment00012.ts", "segment#.ts"),
+        ("advert00012.ts", "advert#.ts"),
+        ("3f9a1c2b7d.ts", "#.ts"),  # whole hex word >= 8
+        ("deadbeef.ts", "#.ts"),  # whole hex word >= 8, digits not required
+        ("cafe1234.ts", "#.ts"),
+        ("abc1234.ts", "abc#.ts"),  # hex but 7 chars: only digits replaced
+        ("aGVsbG8gd29ybGQh.ts", "#.ts"),  # 16-char mixed-case base64 word
+        ("Q2h1bmsrMTIzNDU2Nzg=.ts", "#.ts"),  # with '+'-free padding '='
+        ("aGVsbG8gd29ybGQ.ts", "aGVsbG#gd#ybGQ.ts"),  # 15 chars: too short for base64
+        ("abcdefghijk12345.ts", "abcdefghijk#.ts"),  # 16 chars but no uppercase
+        ("ABCDEFGHIJK12345.ts", "ABCDEFGHIJK#.ts"),  # 16 chars but no lowercase
         ("Chunk-7f3a9e21-0042.ts", "Chunk-#-#.ts"),
+        ("media_b2000000_12.ts", "media_#_#.ts"),  # 'b2000000' is an 8-char hex word
+        ("media_k2000000_12.ts", "media_k#_#.ts"),  # 'k' is not hex: digits only
+        ("seg.ts", "seg.ts"),
     ],
 )
 def test_filename_template(name: str, template: str) -> None:
     assert filename_template(name) == template
+
+
+def test_glued_digit_names_still_break() -> None:
+    # Before SPEC v0.3 both names collapsed to '#.ts' and the ad went unnoticed.
+    entries = segs(6, tpl="segment{:05d}.ts") + segs(2, tpl="advert{:05d}.ts")
+    mp = parse_media_playlist(media(*entries), BASE)
+    assert [u for _, u in kinds(mp.events, "uri_pattern_break")] == [
+        "advert00000.ts",
+        "advert00001.ts",
+    ]
 
 
 def test_signature_drops_query_and_fragment() -> None:

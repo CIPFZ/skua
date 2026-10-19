@@ -44,7 +44,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 3 已验收；SPEC v0.3 修正：DATERANGE 按 PDT 锚定（已完成）→ URI 按词模板化 → 批次 4
+- 批次 3 已验收；SPEC v0.3 修正：DATERANGE 按 PDT 锚定、URI 按词模板化均已完成；下一步批次 4
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
@@ -77,6 +77,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - schema：SkipList 拒绝 `content` 区间（SPEC 2 v0.2：content 是隐含补集，不落盘），`Segment` 本身仍允许 6 类标签。**未升 SCHEMA_VERSION，唯一理由是 v1 格式尚未被任何非测试代码写到磁盘**；以后同类"只是收紧校验"的改动，只要已有落盘文件就必须升版本并写迁移（项目所有者 2026-10-19 决定）
 - playlist：`key_change` 以第一个分片的加密状态为基线（首个 KEY 不算变化），之后任何变化都算，包括清流与加密之间的切换；payload 只带 `method`，不带 key URI
 - playlist：robust z 用标准定义 `(x - median) / (1.4826 × MAD)`，1.4826 是使 MAD 在正态下等于 σ 的一致性常数，不是调参项；MAD = 0 时按 SPEC 退回 `1.2533 × mean|x - median|`
+- playlist（SPEC v0.3）：文件名按 `-` `_` `.` 切词；整词 ≥ 8 位 hex → `#`（不要求含数字，`deadbeef` 也算）；整词 ≥ 16 位、只含 base64 字符（不含 `/`）且大小写都有 → `#`；其余词只替换数字串。`hex_word_min_len` / `base64_word_min_len` 进 `PlaylistConfig`
 - playlist：URI 签名中的 host 只以 8 位哈希出现，目录名只计深度、不参与模板；本地路径的 host 记为 `local`
 - playlist：除 SPEC 列出的 fMP4、SAMPLE-AES 外，以下输入也直接报错：无 EXT-X-ENDLIST（直播，SPEC 0 不做）、EXT-X-BYTERANGE、未知 KEY METHOD、非正 EXTINF、无分片
 - playlist（SPEC v0.3）：DATERANGE 有 PDT 时按 START-DATE 经 PDT 映射到分片（m3u8 库的 `current_program_date_time` 沿分片累加，遇新 PDT 重置），标签位置不作数；整个列表无 PDT 才按标签所挂分片锚定。payload 新增 `anchored_by`（program-date-time / position）与 `duration_source`（DURATION / END-DATE / PLANNED-DURATION / null）
