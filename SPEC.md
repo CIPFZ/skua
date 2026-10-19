@@ -95,6 +95,7 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 - 文件布局：`playlist.py`（解析与播放列表事件）、`fetch.py`（下载缓存）、`decode.py`（唯一允许 `import av` 的文件：demux 探测、帧与 PCM 迭代器、容器事件）、`timeline.py`（时间轴重建）、`proc.py`（外部进程白名单），`hls.py` 只是门面 `open_hls(src)`，只做编排。adapter 内部的分片表（URI、本地路径、轴偏移）落 `cache/<media_id>/index.json`，不进 schema。
 - 用 `m3u8` 库解析 master/media playlist，选最高码率变体。
 - 分片下载并发 8，落盘缓存到 `cache/<media_id>/segN.ts`，`.part` + 原子 rename 实现断点，失败重试 3 次指数退避，支持边下边检。加密分片以原始密文落盘，解密只在 decode 读取时经 libav `crypto:` 协议在内存中进行；密钥与 IV 只存在于内存，不落盘、不进日志、不进 `index.json`。IV 缺省时按 RFC 8216 §5.2 取分片 `EXT-X-MEDIA-SEQUENCE` 序号的大端 128 位值。
+- 解密正确性校验：AES-CBC 下密钥或 IV 错误只损坏首个 16 字节块，libav 会重新同步、demux 照常成功，无法从时间轴上察觉。因此对每个加密分片解密后读取首个 TS 包，校验其 PSI 段的 CRC-32/MPEG-2（标准库实现，不加依赖）。同一 `EXT-X-KEY` 范围内校验失败的分片数 ≥ 2 视为密钥或 IV 规则错误，`open_hls` 报错退出并指明 KEY 范围，不得让损坏数据进入指纹库或特征提取；恰好 1 片失败只告警，并在 adapter 内部的 `index.json` 为该分片记录 `head_crc_ok=false`，不新增事件类型（避免 schema 升级），M1 指纹入库时跳过该分片。
 - M0 支持 MPEG-TS 与 AES-128（经 libav `crypto:` 协议，不加依赖）；fMP4（`EXT-X-MAP`）、`SAMPLE-AES`、`EXT-X-BYTERANGE`、直播列表（无 `ENDLIST`）、未知 `KEY METHOD` 一律明确报错退出。fMP4 与 BYTERANGE 在 M1 一起补齐（fMP4 源常用 BYTERANGE）。需要自定义请求头的源用 `--header`，只从命令行读，不落盘、不写日志。
 - 时间轴重建：以 `EXTINF` 累加为参考，再用每分片首帧 PTS 校正（容差 0.5s，为实现常量非策略参数）；遇 `DISCONTINUITY` 时间轴不断，PTS 在此重锚并记 `pts_jump`（payload 带 `tagged=True`）；无标签的 PTS 跳变记 `pts_jump(tagged=False)`。33-bit PTS 回绕按最近同余代表展开。无法 demux 的分片退化为 EXTINF 长度并告警。
 - 播放列表事件：
@@ -103,7 +104,7 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
   - `uri_pattern_break`：先去掉 query 与 fragment，再对 host、路径深度、文件名模板做签名。模板化按词进行：文件名以 `-`、`_`、`.` 切词；整词为 ≥ 8 位 hex 的替换为 `#`；整词 ≥ 16 位、只含 base64 字符且同时含大写与小写字母的替换为 `#`；其余词只把其中的数字串替换为 `#`（`segment00012` → `segment#`，`advert00012` → `advert#`，两者不同）。与多数签名不同即记事件。可靠性门槛：多数签名占分片数不足 60% 时本路整体禁用并告警（签名不可靠时宁可不报）。
   - `key_change`：`EXT-X-KEY` 变化；首个 KEY 不算变化，之后任何变化（含有无切换）都算。
   - `daterange`：`EXT-X-DATERANGE` 带 `CLASS=ad` 或任一 `SCTE35-*` 属性的全部上报，payload 记录属性种类（out / cmd / in），取舍由 3.3 负责。时长按 RFC 8216 §4.3.2.7 取 `DURATION`，缺则 `END-DATE − START-DATE`，再缺则 `PLANNED-DURATION`，三者皆无只覆盖所挂分片。锚定：播放列表含 `EXT-X-PROGRAM-DATE-TIME` 时按 `START-DATE` 映射到分片（RFC 规定的语义，标签在列表中的位置不作数）；无 PDT 时才退化为标签所挂分片。
-- 容器事件：PyAV 逐包读取。`video_params` 比较解析后的字段（codec、width、height、profile、level、pix_fmt、平均帧率），不比较 extradata 哈希（部分编码器 extradata 抖动会误报）；`audio_params` 比较 codec、sample_rate、channels、profile；`pid_change` 通过 demuxer 的 stream 列表变化检测；`bitrate_outlier` 由 adapter 按分片字节数 / 时长算码率的 MAD z，|z| > 3 时发出，payload 带 z。
+- 容器事件：PyAV 逐包读取。`video_params` 比较解析后的字段（codec、width、height、profile、level、pix_fmt、平均帧率），不比较 extradata 哈希（部分编码器 extradata 抖动会误报）；`audio_params` 比较 codec、sample_rate、channels、profile；`pid_change` 通过 demuxer 的 stream 列表变化检测；`bitrate_outlier` 由 adapter 按分片字节数 / 时长算码率的 MAD z，|z| > 3 时发出，payload 带 z。计算 MAD 基准时排除每个不连续块的首片（GOP 首片含 I 帧，码率系统性偏高，与 `discontinuity` 同位置，不排除会让广告块与正片块的首片同时离群而失去区分度）；被排除的首片仍参与判定，但以其所在块的后续分片中位数为参考。
 
 **MP4/MKV 适配器（M4）**
 - 容器事件来源改为 edit list、chapter、关键帧间隔离群。播放列表事件为空。
@@ -130,7 +131,7 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 - 一个块获得 `ad` 硬先验（解码器对数似然 +4）当且仅当同时满足：块起点带 `discontinuity` 与 `video_params`；块内所有分片均命中 `uri_pattern_break`；块总时长 ≤ 180s（SPEC 3.6 广告块先验上界，更长的块更可能是正片换源）；块不是播放列表中时长占比最大的块。
 - 被 `daterange` 标记的范围直接获得硬先验，不受上述条件约束。只有 `CLASS=ad` 与 `SCTE35-OUT` 构成广告标记；`SCTE35-IN` 标记的是广告结束、正片恢复的位置，永不构成硬先验，但用于截断前一个无时长 `SCTE35-OUT` 范围的终点；`SCTE35-CMD` 不解析二进制 `splice_info_section` 时语义不明（可能是 OUT 也可能是 IN），M0 不构成硬先验，只作为 struct 特征记录，解析留到 M1 之后视真实数据决定。
 - `uri_pattern_break` 单独永远不构成硬先验；本路被禁用（3.1 的 60% 门槛）时块级硬先验整体失效，只剩 `daterange`。
-- M0 的临时决策器 `rule_decoder.py` 仅把硬先验块输出为 `Segment(label="ad", confidence=0.95)`，M3 由 Semi-Markov 解码替换。
+- M0 的临时决策器 `rule_decoder.py` 仅把硬先验块输出为 `Segment(label="ad", confidence=0.95)`，M3 由 Semi-Markov 解码替换。`Segment.evidence` 必须填写：硬先验来源（`daterange` 或 `block`）、块的起止分片 URI 与时长、块级四个条件各自的取值（起点 discontinuity、起点 video_params、块内 uri_pattern_break 命中数 / 分片数、是否最大块）。M0 没有模型，evidence 是唯一能回答"为什么跳了这段"的依据，也是 golden 验收时排查误报的入口。
 
 ### 3.4 `evidence/fingerprint.py`：证据 B
 
