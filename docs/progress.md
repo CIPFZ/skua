@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 5 已验收。SPEC 3.1 修正进行中：CRC 失败按 KEY 范围升级（已完成）→ bitrate MAD 基准排除块首片 → 批次 6
+- SPEC 3.1 修正（CRC 按 KEY 范围升级、bitrate 基准排除块首片）已完成；下一步批次 6 structural.py → rule_decoder.py
 
 ## 已知问题
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
@@ -91,8 +91,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - hls（SPEC 3.1）：KEY 范围 = 连续且 EXT-X-KEY 完全相同的分片段；同一范围内 CRC 失败 ≥ 2 片（`HlsConfig.crc_failures_to_abort`）时 `open_hls` 抛 `AesIntegrityError`，消息给出分片区间、媒体序号区间与脱敏后的 KEY URI；恰好 1 片失败只告警，并在 index.json 记 `head_crc_ok=false`（清流分片与无可校验表段的分片为 null），M1 指纹入库须跳过 false 的分片。注意：只覆盖一个分片的 KEY 范围最多失败 1 片，按规则永远不会升级
 - hls：KEY URI 相对于所选媒体播放列表解析（`KeyState.absolute_uri`），同一 URI 只取一次；密钥长度不是 16 字节或取不到时直接报错，不退化
 - timeline：分片长度取实测跨度（末包 pts + duration − 最早 pts），与 EXTINF 相差超过容差时不信实测、用 EXTINF；分片起点在同一 PTS 段内取 PTS 推算值，与 EXTINF 累加值相差超过容差时记无标签 `pts_jump` 并在累加值处重锚；DISCONTINUITY 处总是在累加值处重锚，前一分片可 demux 时才记 `pts_jump(tagged=True)`（delta 为与前段结束 PTS 的最近同余差）
-- timeline：`bitrate_outlier` 用分片字节数 × 8 / EXTINF，robust z 与 duration_outlier 相同（含 MAD = 0 回退），末片不排除（SPEC 只对 duration_outlier 规定了末片排除）
-- timeline：观察到的合成素材现象：每个单独编码的部分的第一个分片码率偏高（mpeg2 码率控制起步超发），seg000 / seg006 / seg015 被标 `bitrate_outlier`（z ≈ 3.4），广告三片 z ≈ −3.9。bitrate 只进 struct 特征、不构成硬先验，阈值未动
+- timeline（SPEC 3.1）：`bitrate_outlier` 用分片字节数 × 8 / EXTINF；MAD 基准（含 MAD = 0 回退）排除每个不连续块的首片；首片以本块其余分片的中位数为参考、仍用全局尺度判定；只有一片的块没有"其余分片"，按全局中位数判定（实现决定）；末片不排除。payload 增加 `block_head`
+- timeline：合成素材实测（新口径）：广告块首片 ad012 不再离群（z ≈ 0）；广告其余两片 z ≈ −14；三个正片块首片仍离群（z ≈ 12.4），因为测试图样的 I 帧使首片比块内中位数高约 28%，远大于各块中段之间的差异。bitrate 只进 struct 特征，阈值未动；struct 取 |z| 会丢掉符号，正片块首片与 discontinuity 同位置仍然离群这一点已汇报
 - timeline：测试真值由 `truth_axis`（测试内的独立纯函数）从 PyAV 读出的原始首帧 PTS 推出，ffprobe 只做一次交叉校验（AGENT.md 6.2）；PTS 校正由"同一段内 0.2 s PTS 空隙"用例覆盖
 - decode：PyAV 打开时一律加 `correct_ts_overflow=0` 读原始时间戳。libav 默认的溢出校正会把回绕前的包报成负数，而且随 libav 版本变化；分片内回绕由 `unwrap`（取模 2^33 后与锚点最近的代表）展开，跨分片的展开留给 timeline。已验证：PyAV 18.1（捆绑 FFmpeg 8）的原始值与系统 ffprobe 7.0.2 的值模 2^33 全部一致，包括 AES 解密后的分片
 - decode：分片的 `first_pts` 取参考流（首个视频流，没有则音频流）所有包里最早的展示时间，不是第一个包的 pts（open GOP 的前导 B 帧先显示）；合成素材是 closed GOP，所以这一点由 `pts_extent` 的单元测试覆盖

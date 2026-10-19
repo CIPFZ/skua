@@ -13,13 +13,14 @@ M0 shots are one per segment; real shot detection arrives in M2 (SPEC 3.2).
 from __future__ import annotations
 
 import logging
+import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
 from skua.adapter.decode import DemuxProbe, param_changes, unwrap
 from skua.adapter.playlist import CONFIG as PLAYLIST_CONFIG
-from skua.adapter.playlist import PlaylistSegment, robust_z
+from skua.adapter.playlist import PlaylistSegment, robust_scale
 from skua.schema import ContainerEvent, PlaylistEvent, Shot, Timeline
 
 log = logging.getLogger("skua.adapter")
@@ -73,15 +74,29 @@ def _bitrate_outliers(
     starts: Sequence[float],
     config: TimelineConfig,
 ) -> list[ContainerEvent]:
+    """Bitrate MAD z (SPEC 3.1). The first segment of every discontinuity block opens a GOP
+    with an I-frame and runs systematically high, at the same place as ``discontinuity`` in
+    content and ad blocks alike; it is left out of the baseline and judged against the median
+    of the rest of its own block instead."""
     rates = [8 * size / seg.duration for seg, size in zip(segments, sizes, strict=True)]
-    zs = robust_z(rates, PLAYLIST_CONFIG)  # same robust z as duration_outlier (SPEC 3.1)
-    if zs is None:
+    heads = [i for i, seg in enumerate(segments) if i == 0 or seg.discontinuity]
+    head_set = set(heads)
+    stats = robust_scale([r for i, r in enumerate(rates) if i not in head_set], PLAYLIST_CONFIG)
+    if stats is None:
         return []
-    return [
-        ContainerEvent(start, "bitrate_outlier", {"unit": seg.uri, "z": z, "bps": round(rate)})
-        for seg, start, rate, z in zip(segments, starts, rates, zs, strict=True)
-        if abs(z) > config.bitrate_outlier_z
-    ]
+    median, scale = stats
+    references = [median] * len(rates)
+    for head, nxt in zip(heads, [*heads[1:], len(rates)], strict=True):
+        rest = rates[head + 1 : nxt]
+        # A block of a single segment has no "rest"; it is judged against the baseline.
+        references[head] = statistics.median(rest) if rest else median
+    events = []
+    for i, (seg, start, rate) in enumerate(zip(segments, starts, rates, strict=True)):
+        z = (rate - references[i]) / scale
+        if abs(z) > config.bitrate_outlier_z:
+            payload = {"unit": seg.uri, "z": z, "bps": round(rate), "block_head": i in head_set}
+            events.append(ContainerEvent(start, "bitrate_outlier", payload))
+    return events
 
 
 def _remap(

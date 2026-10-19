@@ -157,14 +157,64 @@ def test_parameter_events_only_at_the_ad_boundaries(
     assert all(e.payload["unit"] for e in tl.container_events)
 
 
-def test_bitrate_outliers_include_the_ad(ad_break: tuple[TimelineBuild, list[DemuxProbe]]) -> None:
-    flagged = {
-        e.payload["unit"]: e.payload["z"] for e in events(ad_break[0].timeline, "bitrate_outlier")
+def test_bitrate_outliers_on_the_synthetic_stream(
+    ad_break: tuple[TimelineBuild, list[DemuxProbe]],
+) -> None:
+    got = {e.payload["unit"]: e.payload for e in events(ad_break[0].timeline, "bitrate_outlier")}
+    # The ad's block head is judged against the rest of the ad block, not the whole stream.
+    assert "ads/ad012.ts" not in got
+    assert got["ads/ad013.ts"]["z"] < -3 and got["ads/ad014.ts"]["z"] < -3
+    assert not got["ads/ad013.ts"]["block_head"]
+    # Observed, not asserted away: content block heads still overshoot their own block by
+    # ~28 % (I-frame cost of a test pattern), far beyond the cross-block spread.
+    assert {u for u, p in got.items() if p["block_head"]} == {"seg000.ts", "seg006.ts", "seg015.ts"}
+
+
+def _rates_timeline(synth: SynthResult, rates_kbps: list[float]) -> dict[str, dict[str, object]]:
+    pl = synth.playlist
+    mp = parse_media_playlist(pl.read_text(), str(pl))
+    sizes = [round(r * 1000 * s.duration / 8) for r, s in zip(rates_kbps, mp.segments, strict=True)]
+    build_ = build_timeline(MID, mp.segments, [None] * len(sizes), sizes, mp.events)
+    return {e.payload["unit"]: e.payload for e in events(build_.timeline, "bitrate_outlier")}
+
+
+def test_block_heads_do_not_shape_the_baseline(synth_ad_break: SynthResult) -> None:
+    # Blocks: 0-5, 6-11, 12-14, 15-20 (heads 0, 6, 12, 15). Mild spread in the bodies.
+    body = [1000, 1010, 990, 1005, 995]
+    base = [1000.0, *body, 1000.0, *body, 1000.0, 1000.0, 1000.0, 1000.0, *body]
+    calm = _rates_timeline(synth_ad_break, base)
+    loud_heads = list(base)
+    for head in (0, 6, 12, 15):
+        loud_heads[head] = 9000.0
+    loud = _rates_timeline(synth_ad_break, loud_heads)
+    # Non-head z-scores are identical whatever the heads do.
+    assert {u: p for u, p in loud.items() if not p["block_head"]} == {
+        u: p for u, p in calm.items() if not p["block_head"]
     }
-    assert {"ads/ad012.ts", "ads/ad013.ts", "ads/ad014.ts"} <= set(flagged)
-    assert all(flagged[u] < -3 for u in ("ads/ad012.ts", "ads/ad013.ts", "ads/ad014.ts"))
-    # Observed, not asserted away: the first segment of every separately encoded synthetic
-    # part overshoots the rate control, so seg000 / seg006 / seg015 are flagged too.
+    assert {u for u, p in loud.items() if p["block_head"]} == {
+        "seg000.ts", "seg006.ts", "ads/ad012.ts", "seg015.ts"
+    }  # fmt: skip
+
+
+def test_loud_block_heads_cannot_hide_a_body_outlier(synth_ad_break: SynthResult) -> None:
+    # Flat bodies (MAD = 0 -> mean-absolute-deviation fallback) with one 1100 kbps segment.
+    # Were the 9000 kbps heads in the baseline they would inflate the scale ~300x and mask it.
+    rates = [1000.0] * 21
+    for head in (0, 6, 12, 15):
+        rates[head] = 9000.0
+    rates[9] = 1100.0
+    got = _rates_timeline(synth_ad_break, rates)
+    assert "seg009.ts" in got and got["seg009.ts"]["z"] > 3
+
+
+def test_block_head_is_judged_against_its_own_block(synth_ad_break: SynthResult) -> None:
+    # A low-rate ad block: its body is an outlier against the stream, its head is not, because
+    # the head is compared with the ad body (500), not with the stream median (1000).
+    body = [1000, 1010, 990, 1005, 995]
+    rates = [1000.0, *body, 1000.0, *body, 500.0, 500.0, 500.0, 1000.0, *body]
+    got = _rates_timeline(synth_ad_break, rates)
+    assert "ads/ad012.ts" not in got
+    assert {"ads/ad013.ts", "ads/ad014.ts"} <= set(got)
 
 
 def test_playlist_events_sit_on_the_corrected_axis(
@@ -265,6 +315,20 @@ def test_tolerance_comes_from_config(synth_ad_break: SynthResult) -> None:
     # With 0.1 s the 4.3 s EXTINF is kept and seg004's PTS looks like an untagged jump.
     assert [e.ts for e in events(tight.timeline, "pts_jump") if not e.payload["tagged"]] == [16.3]
     assert not [e for e in events(loose.timeline, "pts_jump") if not e.payload["tagged"]]
+
+
+def test_single_segment_block_is_judged_against_the_baseline() -> None:
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:4"]
+    for i in range(8):
+        if i in (4, 5):
+            lines.append("#EXT-X-DISCONTINUITY")  # segment 4 is a one-segment block
+        lines += ["#EXTINF:4.0,", f"s{i}.ts"]
+    mp = parse_media_playlist("\n".join([*lines, "#EXT-X-ENDLIST"]), "https://example.com/i.m3u8")
+    kbps = [1000, 1000, 1010, 990, 3000, 1000, 1005, 995]
+    sizes = [round(k * 1000 * 4 / 8) for k in kbps]
+    build_ = build_timeline(MID, mp.segments, [None] * 8, sizes, mp.events)
+    got = {e.payload["unit"]: e.payload for e in events(build_.timeline, "bitrate_outlier")}
+    assert set(got) == {"s4.ts"} and got["s4.ts"]["block_head"] is True
 
 
 def test_keyframe_times() -> None:

@@ -186,20 +186,30 @@ def _uri_breaks(
 # --- EXTINF outliers (duration_outlier) -----------------------------------------------------
 
 
-def robust_z(values: Sequence[float], config: PlaylistConfig = CONFIG) -> list[float] | None:
-    """MAD robust z-scores; MAD = 0 falls back to mean absolute deviation; None if both are 0."""
+def robust_scale(
+    values: Sequence[float], config: PlaylistConfig = CONFIG
+) -> tuple[float, float] | None:
+    """``(median, scale)`` of the MAD robust z-score; MAD = 0 falls back to the mean absolute
+    deviation; None if both are 0 or there are no values."""
     if not values:
         return None
     med = statistics.median(values)
     deviations = [abs(v - med) for v in values]
     mad = statistics.median(deviations)
     if mad > 0:
-        scale = config.mad_to_sigma * mad
-    else:
-        mean_ad = statistics.fmean(deviations)
-        if mean_ad <= 0:
-            return None
-        scale = config.meanad_to_sigma * mean_ad
+        return med, config.mad_to_sigma * mad
+    mean_ad = statistics.fmean(deviations)
+    if mean_ad <= 0:
+        return None
+    return med, config.meanad_to_sigma * mean_ad
+
+
+def robust_z(values: Sequence[float], config: PlaylistConfig = CONFIG) -> list[float] | None:
+    """MAD robust z-scores; MAD = 0 falls back to mean absolute deviation; None if both are 0."""
+    stats = robust_scale(values, config)
+    if stats is None:
+        return None
+    med, scale = stats
     return [(v - med) / scale for v in values]
 
 
