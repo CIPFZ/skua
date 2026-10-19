@@ -13,6 +13,7 @@ from make_synth import SynthResult
 from skua import cli
 from skua.cli import ExitCode, main, parse_headers
 from skua.schema import SkipList, Timeline, decode, from_json
+from skua.serve.skiplist import SkipListStore
 from tests.conftest import HlsServer
 
 Serve = Callable[[Path], Awaitable[HlsServer]]
@@ -75,6 +76,21 @@ async def test_cold_then_hot_cache_over_http(
     assert "0 downloaded (hot cache)" in hot
     assert all(h.get("X-Skua-Test") == "yes" for h in server.headers_seen)
     assert "127.0.0.1" not in cold + hot
+
+
+def test_rescan_stores_the_next_version(
+    synth_ad_break: SynthResult, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    db = tmp_path / "skua.sqlite"
+    args = [str(synth_ad_break.playlist), "--out", str(tmp_path / "s.json")]
+    args += ["--cache-dir", str(tmp_path / "c"), "--db", str(db)]
+    _, first, _ = scan(capsys, *args)
+    _, second, err = scan(capsys, *args)
+    v1, v2 = from_json(SkipList, first), from_json(SkipList, second)
+    assert (v1.version, v2.version) == (1, 2) and "stored as version 2" in err
+    store = SkipListStore(db)
+    assert store.versions(v1.media_id) == [1, 2] and store.load(v1.media_id) == v2
+    assert from_json(SkipList, (tmp_path / "s.json").read_text()) == v2
 
 
 # --- exit codes ------------------------------------------------------------------------------

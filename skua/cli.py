@@ -26,6 +26,7 @@ from skua.adapter.proc import redact_urls
 from skua.evidence.rule_decoder import rule_decode
 from skua.evidence.structural import structural_evidence
 from skua.schema import SkipList, to_json
+from skua.serve.skiplist import SkipListStore
 
 log = logging.getLogger("skua.cli")
 
@@ -118,6 +119,9 @@ def scan(
         Path | None,
         typer.Option("--cache-dir", help="Segment cache root (default $SKUA_CACHE_DIR)."),
     ] = None,
+    db: Annotated[
+        Path | None, typer.Option("--db", help="SkipList SQLite store (default $SKUA_DB).")
+    ] = None,
 ) -> None:
     """Detect ad segments of one HLS source and write its SkipList (M0: evidence A only)."""
     started = time.monotonic()
@@ -127,7 +131,8 @@ def scan(
     evidence_started = time.monotonic()
     segments = rule_decode(hls.timeline, structural_evidence(hls.timeline))
     evidence_s = time.monotonic() - evidence_started
-    skiplist = SkipList(hls.media_id, 1, segments)
+    # The store owns the revision number: a rescan of the same media becomes version n + 1.
+    skiplist = SkipListStore(db).save(SkipList(hls.media_id, 1, segments))
     _write_atomic(out, to_json(skiplist, indent=2))
     print(to_json(hls.timeline if json_events else skiplist), file=sys.stdout)
     total = time.monotonic() - started
@@ -137,7 +142,8 @@ def scan(
         f"skua scan: {shots} segments, {hls.downloaded} downloaded ({cache} cache); "
         f"fetch {hls.fetch_s:.3f} s, analysis {hls.analysis_s:.3f} s, "
         f"evidence {evidence_s:.3f} s; hot-path {hls.analysis_s + evidence_s:.3f} s, "
-        f"total {total:.3f} s; {len(segments)} ad segment(s)",
+        f"total {total:.3f} s; {len(segments)} ad segment(s), stored as version "
+        f"{skiplist.version}",
         file=sys.stderr,
     )
 
