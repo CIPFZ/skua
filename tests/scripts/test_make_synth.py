@@ -244,3 +244,55 @@ def test_h264_pts_layout_matches_mpeg2(synth_h264: SynthResult) -> None:
         assert set(steps(part)) == {TICKS_PER_SEG}
     assert pts0[6] - pts0[0] == 1000 * PTS_HZ
     assert pts0[12] == pts0[0]
+
+
+# --- content-keyed product cache (AGENT.md 6.1) ---------------------------------------------
+
+
+def test_ensure_synth_reuses_only_a_matching_product(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = make_synth.ensure_synth(tmp_path, layout="tiny")
+    assert first.out_dir.parent == tmp_path and first.out_dir.name.startswith("tiny-mpeg2video-")
+
+    def no_rebuild(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a cached product must not be regenerated")
+
+    monkeypatch.setattr(make_synth, "synthesize", no_rebuild)
+    again = make_synth.ensure_synth(tmp_path, layout="tiny")
+    assert again.out_dir == first.out_dir
+    assert again.segments == first.segments and again.probes == first.probes
+
+
+def test_synth_key_changes_with_script_parameters_and_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = make_synth.SynthConfig()
+    base = make_synth.synth_key("tiny", "mpeg2video", cfg, "7.0.2")
+    assert base == make_synth.synth_key("tiny", "mpeg2video", cfg, "7.0.2")
+    assert base != make_synth.synth_key("ad-break", "mpeg2video", cfg, "7.0.2")
+    assert base != make_synth.synth_key("tiny", "libx264", cfg, "7.0.2")
+    assert base != make_synth.synth_key(
+        "tiny", "mpeg2video", make_synth.SynthConfig(fps=30), "7.0.2"
+    )
+    assert base != make_synth.synth_key("tiny", "mpeg2video", cfg, "6.1.1")
+    edited = tmp_path / "make_synth.py"
+    edited.write_bytes(Path(make_synth.__file__).read_bytes() + b"\n# edited\n")
+    monkeypatch.setattr(make_synth, "__file__", str(edited))
+    assert base != make_synth.synth_key("tiny", "mpeg2video", cfg, "7.0.2")
+
+
+def test_edited_script_never_reads_the_old_product(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = make_synth.ensure_synth(tmp_path, layout="tiny")
+    edited = tmp_path / "make_synth.py"
+    edited.write_bytes(Path(make_synth.__file__).read_bytes() + b"\n# edited\n")
+    monkeypatch.setattr(make_synth, "__file__", str(edited))
+    new = make_synth.ensure_synth(tmp_path, layout="tiny")
+    assert new.out_dir != old.out_dir
+
+
+def test_load_synth_round_trips_the_session_product(synth_ad_break: SynthResult) -> None:
+    loaded = make_synth.load_synth(synth_ad_break.out_dir)
+    assert loaded == synth_ad_break

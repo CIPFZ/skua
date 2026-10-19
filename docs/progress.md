@@ -45,9 +45,10 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 4 全部完成（AES 合成布局、fetch.py、decode.py），待项目所有者验收
+- 批次 4 已验收。批次 5 进行中：合成产物按内容哈希作键已完成；下一项 timeline.py，然后 hls.py 门面（含 AES 粘合）
 
 ## 已知问题
+- 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
 - 本机 ffmpeg 7.0.2 是 `--enable-libopenh264-dlopen` 构建：`-encoders` 列出 libopenh264，但运行时缺 `libopenh264.so.7`，实际无法编码；本机也没有 libx264；TencentOS 4 的 dnf 源中没有 openh264 包。本机实测可用的视频编码器只有 mpeg2video、mpeg4、libaom-av1、libsvtav1。结论：编码器探测必须靠试编码，不能只读 `-encoders` 列表
 - ffprobe（7.0.2）加 `-correct_ts_overflow 0` 后，回绕点附近个别包仍被展开成 2^33 + x，其后的包又是原始值：ffprobe 的时间戳不是一致的原始 33 位值，批次 5 拿 ffprobe 当真值时必须按模 2^33 比较（样例见 `tests/fixtures/proc/ffprobe_segment_wrap.json`）
@@ -93,6 +94,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - fetch：缓存根目录取 `$SKUA_CACHE_DIR`，未设置时为 `./cache`（已 gitignore）；测试由 conftest 指向临时目录
 - fetch：已完成的 `seg<N>.ts` 直接复用；残留 `.part` 用 `Range: bytes=<已有>-` 续传，服务器回 200 则从头重下，回 416 则删掉 `.part` 重试；5xx / 408 / 429 / 网络错误重试，其余 4xx 立即失败；本地源不复制，直接用原路径
 - fetch：响应体长度与 Content-Length 不符的显式检查是防御代码：aiohttp 3.14 在连接中途断开时自己会抛 ClientPayloadError，测试中走不到这一分支
+- 合成素材：产物目录为 `<cache>/<layout>-<encoder>-<key>`，key = sha256(make_synth.py 字节 + 布局 + 编码器 + SynthConfig + ffmpeg 版本) 前 16 位（AGENT.md 6.1）。先在私有临时目录生成，再原子 rename 到最终名，所以最终名下的目录一定完整；manifest 记录 key 与 ffprobe 探测结果，`load_synth` 从 manifest 重建。测试的缓存根是 `.pytest_cache/d/skua-synth`（CI 每次全新）；旧 key 的目录与中断留下的 `.` 前缀临时目录不会被读，也不自动删除
 - 合成素材：AES 加密用 ffmpeg `crypto:` 协议的写模式，配合 `data` 解复用器 / 封装器按原始字节加密（逐字节可逆，已在本机用 openssl 解开比对，openssl 不入仓库）。不用 `-c copy -copyts` 重新封装：ffmpeg 7.0.2 会把接近 33 位回绕的分片时间戳改写成从 0 开始
 - 合成素材：编码器策略见 AGENT.md 6.1（项目所有者 2026-10-19 决定，mpeg2video 为默认，h264 组为 CI 增量，探测链不含 libopenh264）。EXTINF 取段内视频帧数 / fps，不用 segment 封装器 csv 的时间（它差一帧）；PTS 偏移用 segment 封装器的 `-initial_offset`（`-output_ts_offset` 会让切点错位）；内层 mpegts 选项须经 `-segment_format_options` 传入
 - schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量

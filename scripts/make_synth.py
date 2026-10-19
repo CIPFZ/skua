@@ -13,9 +13,12 @@ Usage: python scripts/make_synth.py --out DIR [--layout ad-break] [--video-encod
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -485,9 +488,7 @@ def synthesize(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     probed = {name: probe_encoder(name) for name in PROBED_ENCODERS}
-    version = parse_ffmpeg_version(
-        run(AllowedCommand.FFMPEG, ["-hide_banner", "-version"], timeout_s=30).stdout.decode()
-    )
+    version = ffmpeg_version()
     summary = ", ".join(f"{k}={'ok' if v else 'unavailable'}" for k, v in probed.items())
     print(
         f"make_synth: ffmpeg {version}; probe {summary}; using video={video_encoder} "
@@ -551,12 +552,14 @@ def synthesize(
         json.dumps(
             {
                 "generator": "scripts/make_synth.py",
+                "key": synth_key(layout, video_encoder, cfg, version),
                 "layout": layout,
                 "ffmpeg_version": version,
                 "encoders": {"probed": probed, "video": video_encoder, "audio": AUDIO_ENCODER},
                 "config": asdict(cfg),
                 "parts": [asdict(p) for p in parts],
                 "segments": [asdict(s) for s in segments],
+                "probes": [asdict(p) for p in probes],
                 "ads": [list(a) for a in ads],
                 "playlist": playlist.name,
                 "master": master.name,
@@ -568,6 +571,74 @@ def synthesize(
     return SynthResult(
         out_dir, playlist, master, manifest, video_encoder, probed, segments, probes, ads
     )
+
+
+def ffmpeg_version() -> str:
+    """Version string of the ffmpeg on PATH."""
+    out = run(AllowedCommand.FFMPEG, ["-hide_banner", "-version"], timeout_s=30).stdout
+    return parse_ffmpeg_version(out.decode())
+
+
+def synth_key(layout: str, video_encoder: str, cfg: SynthConfig, version: str) -> str:
+    """Cache key: this script's bytes + every generation parameter + the ffmpeg version.
+
+    Editing make_synth.py changes the key, so stale products are never read (AGENT.md 6.1).
+    """
+    digest = hashlib.sha256(Path(__file__).read_bytes())
+    params = {"layout": layout, "video": video_encoder, "config": asdict(cfg), "ffmpeg": version}
+    digest.update(json.dumps(params, sort_keys=True).encode())
+    return digest.hexdigest()[:16]
+
+
+def load_synth(out_dir: Path) -> SynthResult:
+    """Rebuild a SynthResult from a product directory's manifest.json."""
+    m = json.loads((out_dir / "manifest.json").read_text())
+    probes = [
+        SegmentProbe(
+            streams=[StreamProbe(**st) for st in p["streams"]],
+            video_packets=[PacketProbe(**pk) for pk in p["video_packets"]],
+        )
+        for p in m["probes"]
+    ]
+    return SynthResult(
+        out_dir=out_dir,
+        playlist=out_dir / m["playlist"],
+        master=out_dir / m["master"],
+        manifest=out_dir / "manifest.json",
+        video_encoder=m["encoders"]["video"],
+        probed=m["encoders"]["probed"],
+        segments=[SegmentTruth(**s) for s in m["segments"]],
+        probes=probes,
+        ads=[(a[0], a[1]) for a in m["ads"]],
+    )
+
+
+def ensure_synth(
+    cache_root: Path,
+    *,
+    layout: str = "ad-break",
+    video_encoder: str = DEFAULT_VIDEO_ENCODER,
+    cfg: SynthConfig | None = None,
+) -> SynthResult:
+    """Product for these parameters under ``cache_root/<layout>-<encoder>-<key>``, generated on
+    first use. Products are built in a private temp dir and renamed into place, so a directory
+    under the final name is always complete."""
+    cfg = cfg or SynthConfig()
+    key = synth_key(layout, video_encoder, cfg, ffmpeg_version())
+    final = cache_root / f"{layout}-{video_encoder}-{key}"
+    if not (final / "manifest.json").is_file():
+        cache_root.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix=f".{final.name}.", dir=cache_root))
+        synthesize(tmp / "out", layout=layout, video_encoder=video_encoder, cfg=cfg)
+        try:
+            os.rename(tmp / "out", final)
+        except OSError:
+            if not (final / "manifest.json").is_file():  # lost a race to a complete product?
+                raise
+    result = load_synth(final)
+    if json.loads(result.manifest.read_text()).get("key") != key:
+        raise RuntimeError(f"{final} does not hold a product for key {key}")
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

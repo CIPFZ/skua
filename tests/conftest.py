@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from aiohttp import web
-from make_synth import H264_ENCODER, PROBED_ENCODERS, SynthResult, probe_encoder, synthesize
+from make_synth import H264_ENCODER, PROBED_ENCODERS, SynthResult, ensure_synth, probe_encoder
 
 # CI sets this so the h264 group can never be silently skipped there (AGENT.md 6.1).
 REQUIRE_H264_ENV = "SKUA_REQUIRE_H264"
@@ -35,41 +35,45 @@ def pytest_report_header() -> str:
 
 
 @pytest.fixture(scope="session")
-def synth_ad_break(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+def synth_root(request: pytest.FixtureRequest) -> Path:
+    """Content-keyed product cache in .pytest_cache: reused across runs until make_synth.py,
+    a layout parameter or the ffmpeg version changes (AGENT.md 6.1)."""
+    return Path(request.config.cache.mkdir("skua-synth"))
+
+
+@pytest.fixture(scope="session")
+def synth_ad_break(synth_root: Path) -> SynthResult:
     """C1 | D C2 | D AD | D C3 in mpeg2video, shared by every test in the session."""
-    return synthesize(tmp_path_factory.mktemp("synth") / "ad-break", layout="ad-break")
+    return ensure_synth(synth_root, layout="ad-break")
 
 
 @pytest.fixture(scope="session")
-def synth_same_uri(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+def synth_same_uri(synth_root: Path) -> SynthResult:
     """Same layout, but the ad keeps the content URI template."""
-    out = tmp_path_factory.mktemp("synth") / "same-uri"
-    return synthesize(out, layout="ad-break-same-uri")
+    return ensure_synth(synth_root, layout="ad-break-same-uri")
 
 
 @pytest.fixture(scope="session")
-def synth_marked(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+def synth_marked(synth_root: Path) -> SynthResult:
     """ad-break with a 10 s ad (4 + 4 + 2 s) carrying EXT-X-DATERANGE CLASS="ad"."""
-    out = tmp_path_factory.mktemp("synth") / "marked"
-    return synthesize(out, layout="ad-break-marked")
+    return ensure_synth(synth_root, layout="ad-break-marked")
 
 
 @pytest.fixture(scope="session")
-def synth_aes(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+def synth_aes(synth_root: Path) -> SynthResult:
     """ad-break with AES-128: C1, C2 on key k1 (explicit IV), clear ad, C3 on k2 (implicit IV)."""
-    return synthesize(tmp_path_factory.mktemp("synth") / "aes", layout="ad-break-aes")
+    return ensure_synth(synth_root, layout="ad-break-aes")
 
 
 @pytest.fixture(scope="session")
-def synth_h264(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+def synth_h264(synth_root: Path) -> SynthResult:
     """ad-break layout in libx264; skipped locally when unavailable, a failure in CI."""
     if not probe_encoder(H264_ENCODER):
         reason = f"{H264_ENCODER} failed the trial encode in this ffmpeg build"
         if os.environ.get(REQUIRE_H264_ENV) == "1":
             pytest.fail(f"{reason}, but {REQUIRE_H264_ENV}=1", pytrace=False)
         pytest.skip(reason)
-    out = tmp_path_factory.mktemp("synth") / "h264"
-    return synthesize(out, layout="ad-break", video_encoder=H264_ENCODER)
+    return ensure_synth(synth_root, layout="ad-break", video_encoder=H264_ENCODER)
 
 
 # --- local HLS server (AGENT.md 6.1: 127.0.0.1, random port, aiohttp) -------------------------
