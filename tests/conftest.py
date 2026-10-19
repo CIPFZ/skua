@@ -42,6 +42,13 @@ def synth_same_uri(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
 
 
 @pytest.fixture(scope="session")
+def synth_marked(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
+    """ad-break with a 10 s ad (4 + 4 + 2 s) carrying EXT-X-DATERANGE CLASS="ad"."""
+    out = tmp_path_factory.mktemp("synth") / "marked"
+    return synthesize(out, layout="ad-break-marked")
+
+
+@pytest.fixture(scope="session")
 def synth_h264(tmp_path_factory: pytest.TempPathFactory) -> SynthResult:
     """ad-break layout in libx264; skipped locally when unavailable, a failure in CI."""
     if not probe_encoder(H264_ENCODER):

@@ -19,7 +19,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 ### 批次 3 proc / synth / playlist（10.3、10.1d）
 - [x] 10.3a `adapter/proc.py`：`AllowedCommand`（FFMPEG、FFPROBE）与 `run`；参数只收 list[str]、stdin 关闭、超时强杀、错误信息与日志不含 URL（`redact_urls` / `host_hash`）
 - [x] 10.1d `scripts/make_synth.py`：mpeg2video + aac 合成 C1 | D C2 | D AD | D C3（AD 换分辨率 / PID / URI 模板，C3 内发生 33 位回绕），另有 same-uri 反例与 tiny 布局；试编码探测结果打印到 stderr 并写入 `manifest.json`；`@pytest.mark.h264` 组用 libx264 断言同样的结构，CI 设 `SKUA_REQUIRE_H264=1`，该组若被跳过即判失败；CI 另有一步单独跑 `-m h264` 并用 junit 断言 tests>0、skipped=0，结果写入 job summary（匿名访问看不到 Actions 日志，所以由步骤成功本身证明该组执行过）
-- [ ] 10.3b `adapter/playlist.py`：五种 PlaylistEvent 与签名函数
+- [x] 10.3b `adapter/playlist.py`：选最高 BANDWIDTH 变体，五种 PlaylistEvent，`uri_signature` / `filename_template` / `robust_z` 单独可测；每种事件都有合成 HLS 正例与不触发的反例（key_change 例外：make_synth 不加密，正反例用手写播放列表，AES 合成随批次 4 decode 补上）
 
 ### 批次 4 fetch / decode（10.3）
 - [ ] 10.3c `adapter/fetch.py`：并发 8、`.part` 断点、重试、`media_id`
@@ -44,7 +44,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 3：10.3a、Q2（SkipList 拒绝 content）、10.1d 完成；下一项 10.3b playlist.py
+- 批次 3 全部完成（10.3a、Q2、10.1d、10.3b），待项目所有者验收
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
@@ -54,6 +54,9 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - `check_imports` 只防误用不防恶意：`getattr(os, "system")` 一类反射调用抓不到（项目所有者 2026-10-16 接受）
 
 ## 开放问题（需项目所有者决策）
+- （批次 6 之前必须裁定，影响错跳）只带 `SCTE35-IN` 的 EXT-X-DATERANGE 是否算"daterange 广告标记"。playlist.py 按 SPEC 字面全部上报，payload `scte35` 记录 out/cmd/in，取舍留给 structural
+- （批次 6 之前裁定）DATERANGE 只有 END-DATE、没有 DURATION / PLANNED-DURATION 时，SPEC 字面是只覆盖所挂分片，当前按字面实现（覆盖少，偏安全）
+- （影响召回，不影响错跳）base64 模板化按 SPEC 字面实现：`[A-Za-z0-9+=]` 连续串 ≥ 8 且含数字整体变 `#`，所以 `segment00012.ts` 与 `advert00012.ts` 会得到同一模板，URI 断裂漏报
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
 
 ## ADR 列表
@@ -75,6 +78,12 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - schema：顶层 `schema_version` 每个文档必填，不在 dataclass 中；`decode()` 返回 `Document(value, schema_version, golden)`，`from_json()` 只返回值。迁移表 `MIGRATIONS[n]` 将 n 升到 n+1，缺一步即报错，比当前新的版本拒绝
 - schema：golden 元数据 `annotator`（非空）与 `annotated_at`（ISO 8601）必须成对出现，只允许出现在 SkipList 上；golden 文件中所有 segment 必须 confidence=1.0、evidence 为空（SPEC 2）
 - schema：SkipList 拒绝 `content` 区间（SPEC 2 v0.2：content 是隐含补集，不落盘），`Segment` 本身仍允许 6 类标签。**未升 SCHEMA_VERSION，唯一理由是 v1 格式尚未被任何非测试代码写到磁盘**；以后同类"只是收紧校验"的改动，只要已有落盘文件就必须升版本并写迁移（项目所有者 2026-10-19 决定）
+- playlist：`key_change` 以第一个分片的加密状态为基线（首个 KEY 不算变化），之后任何变化都算，包括清流与加密之间的切换；payload 只带 `method`，不带 key URI
+- playlist：robust z 用标准定义 `(x - median) / (1.4826 × MAD)`，1.4826 是使 MAD 在正态下等于 σ 的一致性常数，不是调参项；MAD = 0 时按 SPEC 退回 `1.2533 × mean|x - median|`
+- playlist：URI 签名中的 host 只以 8 位哈希出现，目录名只计深度、不参与模板；本地路径的 host 记为 `local`
+- playlist：除 SPEC 列出的 fMP4、SAMPLE-AES 外，以下输入也直接报错：无 EXT-X-ENDLIST（直播，SPEC 0 不做）、EXT-X-BYTERANGE、未知 KEY METHOD、非正 EXTINF、无分片
+- playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
+- 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例
 - 合成素材：编码器策略见 AGENT.md 6.1（项目所有者 2026-10-19 决定，mpeg2video 为默认，h264 组为 CI 增量，探测链不含 libopenh264）。EXTINF 取段内视频帧数 / fps，不用 segment 封装器 csv 的时间（它差一帧）；PTS 偏移用 segment 封装器的 `-initial_offset`（`-output_ts_offset` 会让切点错位）；内层 mpegts 选项须经 `-segment_format_options` 传入
 - schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量
 - schema：`FEATURE_SCHEMA` 的 list 子字段显式命名为 `element` 且不可为 null，因为 parquet 读回时会改名为 `element`，这样读回的 schema 与定义逐字节一致；parquet 元数据带 `skua_schema_version`；写入用 `.part` + 原子 rename；有值但 FEATURE_SCHEMA 中尚无列的字段（M1/M2）拒绝写入，而不是静默丢弃
@@ -85,4 +94,4 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 ## 下次会话从这里继续
 - 工作流程：直接提交 main（AGENT.md 4.1）；推送前过第 7 章清单；推送后用 Actions 页面确认运行通过再汇报；汇报前先 `git ls-remote origin` 确认远端事实状态
 - 本机没有 `gh`，匿名 API 常被限流；改为读取 Actions 网页（`/actions/workflows/ci.yml?query=branch%3Amain` 的 aria-label）确认结果
-- 下一步：批次 2 验收后开始批次 3（proc / make_synth / playlist）
+- 下一步：批次 3 验收后开始批次 4（fetch / decode）

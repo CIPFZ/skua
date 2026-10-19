@@ -17,7 +17,7 @@ import json
 import math
 import sys
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -74,6 +74,7 @@ class Part:
     start_pid: int = 0x100
     sample_rate: int = 48_000
     channels: int = 2
+    daterange: bool = False  # EXT-X-DATERANGE CLASS="ad" spanning the part, on its first segment
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,7 @@ class SegmentTruth:
     extinf: float
     start: float  # on the EXTINF-accumulated axis, seconds
     bytes: int
+    daterange: float | None = None  # DURATION of a CLASS="ad" DATERANGE attached here
 
 
 # --- layouts --------------------------------------------------------------------------------
@@ -119,6 +121,17 @@ def ad_break_layout(*, same_uri: bool = False) -> list[Part]:
     ]
 
 
+def ad_break_marked_layout() -> list[Part]:
+    """ad-break with explicit ad markers: a 10 s ad (4 + 4 + 2 s, so the 2 s segment is a
+    non-final EXTINF outlier) carrying an EXT-X-DATERANGE CLASS="ad"."""
+    c1, c2, ad, c3 = ad_break_layout()
+    marked = Part(
+        ad.name, ad.kind, 10, ad.size, ad.uri_template, ad.discontinuity,
+        ad.pts_offset_s, ad.start_pid, daterange=True,
+    )  # fmt: skip
+    return [c1, c2, marked, c3]
+
+
 def tiny_layout() -> list[Part]:
     """One content segment and one ad segment; for fast CLI and encoder tests."""
     return [
@@ -130,6 +143,7 @@ def tiny_layout() -> list[Part]:
 LAYOUTS = {
     "ad-break": ad_break_layout,
     "ad-break-same-uri": lambda: ad_break_layout(same_uri=True),
+    "ad-break-marked": ad_break_marked_layout,
     "tiny": tiny_layout,
 }
 
@@ -321,6 +335,16 @@ def _encode_part(
     return [(rel_dir / name).as_posix() for name in names]
 
 
+def _iso(offset_s: float) -> str:
+    """Wall clock of an axis offset; arbitrary epoch, RFC 8216 4.3.2.7 needs a PDT with a
+    DATERANGE."""
+    whole = int(offset_s)
+    millis = round((offset_s - whole) * 1000)
+    hours, rem = divmod(whole, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"2026-01-01T{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}Z"
+
+
 def _media_playlist(segments: Sequence[SegmentTruth]) -> str:
     target = math.ceil(max((s.extinf for s in segments), default=1.0))
     lines = [
@@ -330,9 +354,17 @@ def _media_playlist(segments: Sequence[SegmentTruth]) -> str:
         "#EXT-X-MEDIA-SEQUENCE:0",
         "#EXT-X-PLAYLIST-TYPE:VOD",
     ]
-    for seg in segments:
+    marked = any(s.daterange is not None for s in segments)
+    for i, seg in enumerate(segments):
         if seg.discontinuity:
             lines.append("#EXT-X-DISCONTINUITY")
+        if marked and i == 0:
+            lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{_iso(0.0)}")
+        if seg.daterange is not None:
+            lines.append(
+                f'#EXT-X-DATERANGE:ID="{seg.part}-{i}",CLASS="ad",'
+                f'START-DATE="{_iso(seg.start)}",DURATION={seg.daterange:.3f}'
+            )
         lines += [f"#EXTINF:{seg.extinf:.6f},", seg.uri]
     lines.append("#EXT-X-ENDLIST")
     return "\n".join(lines) + "\n"
@@ -391,6 +423,7 @@ def synthesize(
     for part in parts:
         uris = _encode_part(part, cfg, video_encoder, out_dir, len(segments))
         part_start = clock
+        first_of_part = len(segments)
         for i, uri in enumerate(uris):
             # EXTINF = whole frames in the segment; exact because keyframes are forced on the
             # segment grid (the segment muxer's own csv times are off by one frame).
@@ -411,6 +444,9 @@ def synthesize(
             clock += extinf
         if part.kind == "ad":
             ads.append((part_start, clock))
+        if part.daterange:
+            first = segments[first_of_part]
+            segments[first_of_part] = replace(first, daterange=clock - part_start)
 
     playlist = out_dir / "index.m3u8"
     playlist.write_text(_media_playlist(segments))
