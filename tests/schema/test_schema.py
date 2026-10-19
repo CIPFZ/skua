@@ -489,7 +489,26 @@ def test_to_json_rejects_non_schema_objects() -> None:
         from_json(dict, "{}")  # type: ignore[type-var]
 
 
+def test_skiplist_never_stores_content_segments() -> None:
+    content = Segment(12.0, 20.0, "content", 0.99, {})
+    with pytest.raises(SchemaError, match="implicit complement"):
+        SkipList(MID, 1, [Segment(8.0, 12.0, "ad", 0.95, {}), content])
+    doc = raw(make_skiplist())
+    doc["segments"][1]["label"] = "content"
+    with pytest.raises(SchemaError, match=r"SkipList\.segments\[1\]\.label"):
+        from_json(SkipList, dumps(doc))
+    # Segment itself keeps the full label set: the decoder works on full coverage.
+    assert from_json(Segment, to_json(content)) == content
+
+
+@pytest.mark.parametrize("label", ["ad", "intro", "recap", "outro", "trailer"])
+def test_skiplist_accepts_every_non_content_label(label: str) -> None:
+    sl = SkipList(MID, 1, [Segment(0.0, 5.0, label, 0.9, {})])  # type: ignore[arg-type]
+    assert from_json(SkipList, to_json(sl)) == sl
+
+
 def test_literal_sets_match_spec() -> None:
+    assert schema.SKIPLIST_LABELS == ("ad", "intro", "recap", "outro", "trailer")
     assert schema.SEGMENT_LABELS == ("content", "ad", "intro", "recap", "outro", "trailer")
     assert schema.CONTAINER_EVENT_KINDS == (
         "pts_jump", "video_params", "audio_params", "pid_change", "bitrate_outlier",

@@ -58,6 +58,8 @@ SegmentLabel = Literal["content", "ad", "intro", "recap", "outro", "trailer"]
 CONTAINER_EVENT_KINDS: tuple[str, ...] = get_args(ContainerEventKind)
 PLAYLIST_EVENT_KINDS: tuple[str, ...] = get_args(PlaylistEventKind)
 SEGMENT_LABELS: tuple[str, ...] = get_args(SegmentLabel)
+CONTENT_LABEL = "content"
+SKIPLIST_LABELS: tuple[str, ...] = tuple(x for x in SEGMENT_LABELS if x != CONTENT_LABEL)
 
 SCHEMA_VERSION_KEY = "schema_version"
 GOLDEN_META_KEYS: tuple[str, str] = ("annotator", "annotated_at")
@@ -347,7 +349,11 @@ class Segment:
 
 @dataclass
 class SkipList:
-    """Skip list of one media (SPEC 2); same schema as a golden annotation file."""
+    """Skip list of one media (SPEC 2); same schema as a golden annotation file.
+
+    Only non-content segments are stored: content is the implicit complement and is dropped
+    before writing, even though a decoder works on a full-coverage sequence (SPEC 2).
+    """
 
     media_id: str
     version: int  # revision of this media's skip list, starts at 1; not the schema version
@@ -357,6 +363,12 @@ class SkipList:
         _media_id("media_id", self.media_id)
         self.version = _int("version", self.version, minimum=1)
         segments = _items_of("segments", self.segments, Segment)
+        for i, seg in enumerate(segments):
+            if seg.label == CONTENT_LABEL:
+                raise SchemaError(
+                    f"segments[{i}].label: 'content' is the implicit complement and is never "
+                    "stored in a SkipList (SPEC 2)"
+                )
         for i in range(1, len(segments)):
             if segments[i].start < segments[i - 1].end:
                 raise SchemaError(
@@ -721,6 +733,7 @@ __all__ = [
     "PLAYLIST_EVENT_KINDS",
     "SCHEMA_VERSION",
     "SEGMENT_LABELS",
+    "SKIPLIST_LABELS",
     "ContainerEvent",
     "ContainerEventKind",
     "Document",

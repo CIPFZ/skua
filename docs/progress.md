@@ -74,6 +74,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - schema：`ShotFeatures` 可选字段缺失与显式 null 解码结果一致，写出时一律写显式 null；`struct` 必填且不可为 null
 - schema：顶层 `schema_version` 每个文档必填，不在 dataclass 中；`decode()` 返回 `Document(value, schema_version, golden)`，`from_json()` 只返回值。迁移表 `MIGRATIONS[n]` 将 n 升到 n+1，缺一步即报错，比当前新的版本拒绝
 - schema：golden 元数据 `annotator`（非空）与 `annotated_at`（ISO 8601）必须成对出现，只允许出现在 SkipList 上；golden 文件中所有 segment 必须 confidence=1.0、evidence 为空（SPEC 2）
+- schema：SkipList 拒绝 `content` 区间（SPEC 2 v0.2：content 是隐含补集，不落盘），`Segment` 本身仍允许 6 类标签。**未升 SCHEMA_VERSION，唯一理由是 v1 格式尚未被任何非测试代码写到磁盘**；以后同类"只是收紧校验"的改动，只要已有落盘文件就必须升版本并写迁移（项目所有者 2026-10-19 决定）
 - schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量
 - schema：`FEATURE_SCHEMA` 的 list 子字段显式命名为 `element` 且不可为 null，因为 parquet 读回时会改名为 `element`，这样读回的 schema 与定义逐字节一致；parquet 元数据带 `skua_schema_version`；写入用 `.part` + 原子 rename；有值但 FEATURE_SCHEMA 中尚无列的字段（M1/M2）拒绝写入，而不是静默丢弃
 
