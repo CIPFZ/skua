@@ -23,7 +23,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 
 ### 批次 4 fetch / decode（10.3）
 - [x] 10.3c0 `make_synth.py` 的 `ad-break-aes` 布局：C1、C2 共用 k1（显式 IV，C2 跨 DISCONTINUITY 不触发 key_change），广告明文，C3 换 k2（隐式 IV = 媒体序号，RFC 8216 5.2）；key_change 有了合成正例与反例
-- [ ] 10.3c `adapter/fetch.py`：并发 8、`.part` 断点、重试、`media_id`
+- [x] 10.3c `adapter/fetch.py`：并发 8、`.part` 断点（HTTP Range 续传）、重试 3 次指数退避、`media_id`；`tests/conftest.py` 的本地 HLS 服务器（127.0.0.1 随机端口，可注入 503 / 404 / 响应体截断 / 不支持 Range，并记录并发数）
 - [ ] 10.3d `adapter/decode.py`：`probe_segment` / `iter_frames` / `iter_pcm` 与容器事件；`tests/conftest.py` 本地 HLS 服务器
 
 ### 批次 5 timeline（10.3）
@@ -45,7 +45,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 4 进行中：AES-128 合成布局已完成；下一项 fetch.py 与本地 HLS 服务器，然后 decode.py
+- 批次 4 进行中：AES-128 合成布局、fetch.py 已完成；下一项 decode.py
 
 ## 已知问题
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
@@ -85,6 +85,10 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
+- fetch：`media_id` 规范化时同时丢弃 URL 中的 userinfo（凭据不应影响内容身份）；本地文件取 `os.path.abspath`（归一化 `..`，不解析符号链接）；`file:` 视同本地路径；其他 scheme 报错
+- fetch：缓存根目录取 `$SKUA_CACHE_DIR`，未设置时为 `./cache`（已 gitignore）；测试由 conftest 指向临时目录
+- fetch：已完成的 `seg<N>.ts` 直接复用；残留 `.part` 用 `Range: bytes=<已有>-` 续传，服务器回 200 则从头重下，回 416 则删掉 `.part` 重试；5xx / 408 / 429 / 网络错误重试，其余 4xx 立即失败；本地源不复制，直接用原路径
+- fetch：响应体长度与 Content-Length 不符的显式检查是防御代码：aiohttp 3.14 在连接中途断开时自己会抛 ClientPayloadError，测试中走不到这一分支
 - 合成素材：AES 加密用 ffmpeg `crypto:` 协议的写模式，配合 `data` 解复用器 / 封装器按原始字节加密（逐字节可逆，已在本机用 openssl 解开比对，openssl 不入仓库）。不用 `-c copy -copyts` 重新封装：ffmpeg 7.0.2 会把接近 33 位回绕的分片时间戳改写成从 0 开始
 - 合成素材：编码器策略见 AGENT.md 6.1（项目所有者 2026-10-19 决定，mpeg2video 为默认，h264 组为 CI 增量，探测链不含 libopenh264）。EXTINF 取段内视频帧数 / fps，不用 segment 封装器 csv 的时间（它差一帧）；PTS 偏移用 segment 封装器的 `-initial_offset`（`-output_ts_offset` 会让切点错位）；内层 mpegts 选项须经 `-segment_format_options` 传入
 - schema：数据合约上的不变量（不是策略参数）在构造时校验：`media_id` 16 位小写 hex、Shot.idx 连续从 0 起、keyframe_ts 1–3 个且在镜头内、事件与镜头按时间非降序、Segment 0 ≤ start < end 且 confidence ∈ [0, 1]、SkipList 内区间有序不重叠、事件 payload 必含非空 `unit`、自由字典必须是纯 JSON 值。numpy 标量会被转成 Python 标量
