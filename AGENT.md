@@ -133,7 +133,7 @@
 | 变更类型 | 必写 |
 |---|---|
 | 新播放列表 / 容器事件 | 合成 HLS 正例 + 不触发的反例 |
-| 时间轴重建 | 含 `DISCONTINUITY` 与 PTS 回绕的合成流，断言镜头时间与 ffprobe 一致（±1 帧） |
+| 时间轴重建 | 含 `DISCONTINUITY` 与 PTS 回绕的合成流，断言镜头时间与 ffprobe 一致（±1 帧）。ffprobe 即使加 `-correct_ts_overflow 0` 在回绕点附近仍会把个别包显示成 `2^33 + x`，真值比较一律按模 `2^33` 进行，样例见 `tests/fixtures/proc/ffprobe_segment_wrap.json` |
 | 指纹匹配 | 同素材转码（码率减半、重缩放、响度 +6 dB）后仍命中；不同素材不命中 |
 | 自匹配规则 | 构造三部合成"剧"，断言 ad / intro / outro / recap / trailer 五类标签各至少一例正确 |
 | 发射模型 | 固定 seed 过拟合 10 条样本至 loss < 0.05（管线正确性）；输入特征缺失（OCR / 人脸 mask）不崩 |
