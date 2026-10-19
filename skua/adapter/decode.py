@@ -31,6 +31,9 @@ log = logging.getLogger("skua.adapter")
 
 PTS_WRAP = 2**33  # 33-bit PTS/DTS in MPEG-TS
 _HALF_WRAP = PTS_WRAP // 2
+TS_PACKET = 188  # ISO/IEC 13818-1 2.4.3.2
+TS_SYNC = 0x47
+_PSI_MAX_PID = 0x1F  # PIDs 0x0000-0x001F carry PSI/SI tables (ISO/IEC 13818-1 table 2-3)
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,9 @@ class DemuxProbe:
     span_ticks: int  # last pts + duration - first_pts, unwrapped
     packets: int  # reference-stream packets with a timestamp
     starts_with_keyframe: bool
+    # AES only: whether the first decrypted TS packet carries a PSI section with a valid CRC.
+    # None when not encrypted or when the first packet holds no checkable section.
+    head_crc_ok: bool | None = None
 
 
 def unwrap(ticks: int, reference: int) -> int:
@@ -99,6 +105,70 @@ def unwrap(ticks: int, reference: int) -> int:
     if delta >= _HALF_WRAP:
         delta -= PTS_WRAP
     return reference + delta
+
+
+def crc32_mpeg2(data: bytes) -> int:
+    """CRC-32/MPEG-2 (poly 0x04C11DB7, init 0xFFFFFFFF, no reflection, no final xor)."""
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            crc = (
+                ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+                if crc & 0x80000000
+                else (crc << 1) & 0xFFFFFFFF
+            )
+    return crc
+
+
+def head_section_crc_ok(packet: bytes) -> bool | None:
+    """Check the PSI section that starts in the first TS packet, if there is one.
+
+    AES-128-CBC with a wrong IV corrupts only the first 16 plaintext bytes, which the demuxer
+    silently resynchronizes over (PAT/SDT repeat). Those bytes are this packet's header and the
+    start of its section, so the section CRC catches a wrong key or IV without any truth.
+    Returns None when the packet holds no section whose CRC can be checked.
+    """
+    if len(packet) < TS_PACKET:
+        return None
+    if packet[0] != TS_SYNC:
+        return False
+    pid = ((packet[1] & 0x1F) << 8) | packet[2]
+    unit_start = bool(packet[1] & 0x40)
+    adaptation = (packet[3] >> 4) & 0x3
+    if not unit_start or pid > _PSI_MAX_PID or adaptation == 0x2:
+        return None
+    pos = 4 + (1 + packet[4] if adaptation == 0x3 else 0)
+    if pos >= TS_PACKET:
+        return False
+    section = pos + 1 + packet[pos]  # pointer_field
+    if section + 3 > TS_PACKET:
+        return None
+    if not packet[section + 1] & 0x80:  # section_syntax_indicator: no CRC_32 (e.g. TDT)
+        return None
+    length = 3 + (((packet[section + 1] & 0x0F) << 8) | packet[section + 2])
+    if section + length > TS_PACKET:
+        return None  # section continues in the next packet
+    # The CRC over a whole section including its CRC_32 field is 0 (ISO/IEC 13818-1 annex A).
+    return crc32_mpeg2(packet[section : section + length]) == 0
+
+
+def _decrypted_head(path: Path, aes: AesParams) -> bytes:
+    """First TS packet of an encrypted segment as raw decrypted bytes (``data`` demuxer)."""
+    options = {"decryption_key": aes.key_hex, "decryption_iv": aes.iv_hex}
+    try:
+        container = av.open(f"crypto:{path}", options=options, format="data")
+    except (av.error.FFmpegError, OSError) as exc:
+        raise DecodeError(f"cannot open segment {path.name}: {exc}") from None
+    try:
+        head = b""
+        for packet in container.demux():
+            head += bytes(packet)
+            if len(head) >= TS_PACKET:
+                break
+        return head[:TS_PACKET]
+    finally:
+        container.close()
 
 
 def pts_extent(packets: Sequence[tuple[int, int]]) -> tuple[int, int]:
@@ -186,6 +256,7 @@ def probe_segment(path: Path, aes: AesParams | None = None) -> DemuxProbe:
             span_ticks=span,
             packets=len(stamped),
             starts_with_keyframe=stamped[0][2],
+            head_crc_ok=head_section_crc_ok(_decrypted_head(path, aes)) if aes else None,
         )
     except av.error.FFmpegError as exc:
         raise DecodeError(f"cannot demux segment {path.name}: {exc}") from None

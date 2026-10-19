@@ -63,6 +63,7 @@ class KeyState:
 
     method: str
     uri: str | None
+    absolute_uri: str | None  # resolved against the playlist; fetched into memory only
     iv: str | None
     keyformat: str | None
     keyformatversions: str | None
@@ -73,6 +74,7 @@ class PlaylistSegment:
     """One media segment. Adapter-internal: never crosses the adapter boundary."""
 
     index: int
+    sequence: int  # media sequence number: EXT-X-MEDIA-SEQUENCE + index (RFC 8216 4.3.3.2)
     uri: str  # as written in the playlist; this is the event / shot ``unit``
     absolute_uri: str
     duration: float  # EXTINF
@@ -228,7 +230,7 @@ def _key_state(key: Any) -> KeyState | None:
         raise UnsupportedPlaylistError(f"EXT-X-KEY METHOD={method} is not supported in M0")
     if method not in _SUPPORTED_KEY_METHODS:
         raise UnsupportedPlaylistError(f"unknown EXT-X-KEY METHOD={method}")
-    return KeyState(method, key.uri, key.iv, key.keyformat, key.keyformatversions)
+    return KeyState(method, key.uri, key.absolute_uri, key.iv, key.keyformat, key.keyformatversions)
 
 
 def _key_changes(segments: Sequence[PlaylistSegment]) -> list[PlaylistEvent]:
@@ -382,6 +384,7 @@ def parse_media_playlist(
 
     segments: list[PlaylistSegment] = []
     clock = 0.0
+    first_sequence = int(pl.media_sequence or 0)
     for i, raw in enumerate(pl.segments):
         duration = float(raw.duration or 0.0)
         if duration <= 0:
@@ -389,6 +392,7 @@ def parse_media_playlist(
         segments.append(
             PlaylistSegment(
                 index=i,
+                sequence=first_sequence + i,
                 uri=str(raw.uri),
                 absolute_uri=str(raw.absolute_uri),
                 duration=duration,

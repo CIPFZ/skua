@@ -28,8 +28,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 
 ### 批次 5 timeline（10.3）
 - [x] 10.3e1 `adapter/timeline.py`：EXTINF 累加 + 首帧 PTS 校正（容差 0.5 s）、DISCONTINUITY 重锚记 `pts_jump(tagged=True)`、无标签跳变记 `tagged=False`、跨分片按最近同余代表展开回绕、不可 demux 分片退回 EXTINF、`video_params` / `audio_params` / `pid_change` / `bitrate_outlier`、播放列表事件按 unit 映射到校正后的轴、M0 每分片一个镜头（关键帧按 SPEC 3.2）
-- [ ] 10.3e2 `adapter/hls.py` 门面：AES 粘合（按 KeyState.uri 取密钥、IV 缺省取媒体序号）、`cache/<media_id>/index.json`
-- [ ] 10.3f 合成 HLS 事件序列 / 时间轴 / PTS 回绕测试，与 ffprobe 真值对比误差在 ±1 帧内
+- [x] 10.3e2 `adapter/hls.py` 门面 `open_hls`：master 选变体 → 解析 → 按 KEY URI 把密钥取进内存 → 下载 → 按 IV 属性或媒体序号（RFC 8216 5.2）构造 AesParams → demux 探测 → Timeline；写 `cache/<media_id>/index.json`（不含密钥、IV、密钥 URI）
+- [x] 10.3f 合成 HLS 事件序列 / 时间轴 / PTS 回绕测试：真值由 PyAV 原始 PTS 经测试内独立纯函数推出，ffprobe 交叉校验一次，误差 ±1 帧（AGENT.md 6.2）；h264 组在 CI 上执行同样的断言
 
 ### 批次 6 structural（10.4）
 - [ ] 10.4a `evidence/structural.py`：10 维 struct 与块级 `hard_prior`
@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 5 进行中：合成产物按内容哈希作键、timeline.py 已完成；下一项 hls.py 门面（含 AES 粘合）
+- 批次 5 全部完成（合成产物按哈希作键、timeline.py、hls.py 含 AES 粘合），待项目所有者验收
 
 ## 已知问题
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
@@ -87,6 +87,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
+- hls / decode：AES-CBC 用错 IV 只破坏首个 16 字节块，libav 会越过它重新同步，demux 照样成功——错 IV 本来是静默的。为此 decode 对加密分片读取解密后的首个 TS 包（PyAV `data` 格式读原始字节），校验其中 PSI 表段（PID ≤ 0x1F）的 CRC32/MPEG-2，结果放在 `DemuxProbe.head_crc_ok`；hls 对 False 的分片告警但不丢弃（时间信息仍然有效）。测试用"把 EXT-X-MEDIA-SEQUENCE 改成 5"证明：显式 IV 的 C1/C2 不受影响，依赖隐式 IV 的 C3 六片全部校验失败
+- hls：KEY URI 相对于所选媒体播放列表解析（`KeyState.absolute_uri`），同一 URI 只取一次；密钥长度不是 16 字节或取不到时直接报错，不退化
 - timeline：分片长度取实测跨度（末包 pts + duration − 最早 pts），与 EXTINF 相差超过容差时不信实测、用 EXTINF；分片起点在同一 PTS 段内取 PTS 推算值，与 EXTINF 累加值相差超过容差时记无标签 `pts_jump` 并在累加值处重锚；DISCONTINUITY 处总是在累加值处重锚，前一分片可 demux 时才记 `pts_jump(tagged=True)`（delta 为与前段结束 PTS 的最近同余差）
 - timeline：`bitrate_outlier` 用分片字节数 × 8 / EXTINF，robust z 与 duration_outlier 相同（含 MAD = 0 回退），末片不排除（SPEC 只对 duration_outlier 规定了末片排除）
 - timeline：观察到的合成素材现象：每个单独编码的部分的第一个分片码率偏高（mpeg2 码率控制起步超发），seg000 / seg006 / seg015 被标 `bitrate_outlier`（z ≈ 3.4），广告三片 z ≈ −3.9。bitrate 只进 struct 特征、不构成硬先验，阈值未动
