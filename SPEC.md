@@ -121,14 +121,15 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 
 每镜头特征（10 维，事件归属按"事件 ts 落在镜头起点 ±0.5s"判定，只看起点：RFC 语义下标签作用于其后的分片，这样同一事件不会同时打到前后两个镜头）：
 - 镜头起点是否有 `discontinuity` / `pts_jump` / `video_params` / `audio_params`（4 个 0/1）。
-- 所覆盖分片的 `duration_outlier` 最大 |z|、`uri_pattern_break` 是否命中、`key_change` 是否命中（3 维）。
-- 所覆盖分片的 `bitrate_outlier` 最大 |z|，无则 0（1 维）。
-- 距离最近结构事件的时间 `log1p(秒)`（1 维）。
-- 覆盖分片是否带 `daterange` 广告标记（1 维，同时输出硬标签）。
+- 所覆盖分片的 `duration_outlier` 带符号 z（取 |z| 最大者并保留其符号）、`uri_pattern_break` 是否命中、`key_change` 是否命中（3 维）。
+- 所覆盖分片的 `bitrate_outlier` 带符号 z（同上），无则 0（1 维）。保留符号的理由：短分片与低码率是广告的典型形态，|z| 会把它们和正片块首片的高码率混为一谈。
+- 距离最近结构事件的时间 `log1p(秒)`（1 维）；整个 Timeline 无任何事件时取 `log1p(总时长)`。
+- 覆盖分片是否带 `daterange` 广告标记（1 维，同时输出硬标签）：`CLASS=ad`、`SCTE35-OUT`、`SCTE35-CMD` 记 1，只带 `SCTE35-IN` 的记 0（IN 标记的是正片恢复点，记 1 会让广告后的第一个正片镜头在特征上像广告）。
 
 **硬先验（按"不连续块"而非单分片判定）**
 - 不连续块 = 相邻两个 `discontinuity`（或播放列表首尾）之间的连续分片。
-- 一个块获得 `ad` 硬先验（解码器对数似然 +4）当且仅当同时满足：块起点带 `discontinuity` 与 `video_params`；块内所有分片均命中 `uri_pattern_break`；块总时长 ≤ 180s（SPEC 3.6 广告块先验上界，更长的块更可能是正片换源）；块不是播放列表中时长占比最大的块。
+- 一个块获得 `ad` 硬先验（解码器对数似然 +4）当且仅当同时满足：块起点带 `discontinuity` 与 `video_params`；块内所有分片均命中 `uri_pattern_break`；块总时长 ≤ 180s（SPEC 3.6 广告块先验上界，更长的块更可能是正片换源）；块不是播放列表中时长占比最大的块（多个块并列最长时全部视为最大块，都不获得先验）。已知 M0 限制：广告块本身是最长块的源（短片配长广告）不会得到块级先验，记录于 golden 验收报告。
+- 同一 `DATERANGE` 同时带 `CLASS=ad` 与 `SCTE35-IN` 时语义矛盾，不构成硬先验，但仍作为截断点使用。无时长的 `SCTE35-OUT` 优先由同 ID 的 `SCTE35-IN` 截断，无同 ID 则取其后第一个 IN，都没有则只覆盖锚定分片。
 - 被 `daterange` 标记的范围直接获得硬先验，不受上述条件约束。只有 `CLASS=ad` 与 `SCTE35-OUT` 构成广告标记；`SCTE35-IN` 标记的是广告结束、正片恢复的位置，永不构成硬先验，但用于截断前一个无时长 `SCTE35-OUT` 范围的终点；`SCTE35-CMD` 不解析二进制 `splice_info_section` 时语义不明（可能是 OUT 也可能是 IN），M0 不构成硬先验，只作为 struct 特征记录，解析留到 M1 之后视真实数据决定。
 - `uri_pattern_break` 单独永远不构成硬先验；本路被禁用（3.1 的 60% 门槛）时块级硬先验整体失效，只剩 `daterange`。
 - M0 的临时决策器 `rule_decoder.py` 仅把硬先验块输出为 `Segment(label="ad", confidence=0.95)`，M3 由 Semi-Markov 解码替换。`Segment.evidence` 必须填写：硬先验来源（`daterange` 或 `block`）、块的起止分片 URI 与时长、块级四个条件各自的取值（起点 discontinuity、起点 video_params、块内 uri_pattern_break 命中数 / 分片数、是否最大块）。M0 没有模型，evidence 是唯一能回答"为什么跳了这段"的依据，也是 golden 验收时排查误报的入口。
@@ -207,6 +208,14 @@ SkipList = {"media_id": str, "version": int, "segments": list[Segment]}
 - 消融：A 单独 / A+B / A+B+C / 去掉 OOD / 去掉音频 / 阈值平滑 vs Semi-Markov，每个里程碑跑一遍存入 `docs/reports/`。
 
 ### 3.8 `serve/`：消费端
+
+**CLI `skua scan`**
+- `skua scan <url|path> --out <skiplist.json> [--json-events] [--header K:V ...] [--db <sqlite>]`。耗时（冷/热缓存分别）打印到 stderr，stdout 只输出 JSON。
+- 退出码：0 成功；1 参数错误；2 源不支持（fMP4、SAMPLE-AES、BYTERANGE、直播、未知 KEY METHOD）；3 完整性错误（AES CRC 升级、CRC 范围错误）；4 下载失败；5 内部错误。mpv 脚本与代理依赖这组退出码区分"无广告"与"没扫成"。
+- `--json-events` 导出完整 `Timeline`，必须能经 `schema.decode` 原样读回。
+
+**SkipList 存储 `serve/skiplist.py`**
+- SQLite 表 `skiplist(media_id, version, schema_version, created_at, body_json)`，主键 `(media_id, version)`；同一 `media_id` 再次写入时 `version` 自动递增，旧版本保留不覆盖（用户申诉与回退需要历史）。读取默认取最大 `version`。
 
 **mpv Lua 脚本 `skua.lua`**
 - 启动时按 `media_id` 读取 skip list（本地文件或 `http://127.0.0.1:7788/skiplist/<id>`）。

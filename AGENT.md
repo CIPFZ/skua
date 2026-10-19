@@ -48,6 +48,7 @@
 - 提交信息：`<scope>: <动词开头的一句话>`，scope 为 `schema` / `adapter` / `shots` / `evidence` / `model` / `train` / `serve` / `mpv` / `docs` / `ci`。示例：`adapter: 实现 EXTINF 的 MAD 离群事件`。
 - 推送后必须确认 GitHub Actions 实际触发并通过，不得仅凭本地结果声称 CI 全绿。
 - 一次推送只带一个提交：CI 只对推送的最新提交运行，批量推送会让中间提交绕过 CI。本地干净 clone 的验证不能替代 CI。
+- `main` 变红的处置：第一动作是 `git revert` 让 `main` 回绿，然后再诊断、修复、重新落地。诊断工具、CI 改进等任何非修复提交不得叠在红的 `main` 上；需要新工具才能诊断时，先 revert 再加工具。
 
 ### 4.2 目录职责速查
 
@@ -121,7 +122,8 @@
 ### 6.1 Fixture 优先
 
 - 测试不得访问网络、不得依赖真实媒体。`tests/fixtures/synth/` 下用 ffmpeg 合成测试视频：彩条 + 正弦音做"正片"，纯色闪烁 + 白噪声做"广告"，`scripts/make_synth.py` 生成，参数化时长、分辨率、是否插入 `DISCONTINUITY`。
-- 合成素材的视频编码器默认 `mpeg2video`（所有 ffmpeg 构建自带，支持 B 帧，MPEG-2 in TS 是标准组合），音频 ffmpeg 内置 `aac`。基础测试集在任何环境下使用同一编码器、断言同一结果，不按环境切换断言。
+- 合成素材的视频编码器默认 `mpeg2video`（所有 ffmpeg 构建自带，支持 B 帧，MPEG-2 in TS 是标准组合），音频 ffmpeg 内置 `aac`。基础测试集在任何环境下使用同一编码器、断言同一结构（分片数、事件种类与位置、时间轴），不按环境切换断言。
+- 同一编码器在不同 ffmpeg 版本下产出的字节数、码率、离群 z 值不保证一致。任何依赖编码产出字节的期望值（码率离群、文件大小、码率 z、由它们派生的"距最近事件"等）必须由测试从 `Timeline` 事件或 ffprobe 重新推导，不得写死常量；纯结构维度可以写死。
 - H.264 特有的检查（profile / level / SPS 解析、`video_params` 对 H.264 字段的比较）单独成组，打 `@pytest.mark.h264`，`libx264` 不可用时跳过；CI 必须安装 libx264 并执行该组，本地跳过不算失败。
 - 编码器可用性必须通过实际编码一小段来探测，不能只看 `ffmpeg -encoders` 列表（dlopen 构建会列出但运行时缺库）。探测结果写入合成产物旁的 `manifest.json` 并打印到 stderr。
 - 合成产物目录以 `make_synth.py` 的内容哈希 + 布局参数作为键，脚本一变旧目录自动失效；测试不得读取未经当前脚本生成的残留目录。
