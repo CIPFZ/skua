@@ -45,7 +45,24 @@ jobs:
         env:
           # libx264 comes with the apt ffmpeg; a skipped h264 group fails the run here.
           SKUA_REQUIRE_H264: "1"
-        run: uv run pytest
+        run: uv run pytest --junitxml=pytest.xml
+
+      - name: Report failed tests as annotations
+        # Annotations are rendered on the public run page; logs need a signed-in account.
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          if not Path("pytest.xml").exists():
+              raise SystemExit(0)
+          for case in ET.parse("pytest.xml").iter("testcase"):
+              for bad in [*case.findall("failure"), *case.findall("error")]:
+                  name = f"{case.get('classname')}::{case.get('name')}"
+                  text = (bad.get("message") or "") + "\n" + (bad.text or "")[-1500:]
+                  text = text.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                  print(f"::error title={name}::{text}")
+          PY
 
       - name: H.264 group executed (not skipped)
         env:

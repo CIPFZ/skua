@@ -55,3 +55,4 @@ assets/icon/skua-icon-pack.zip
 
 # CI junit output
 h264.xml
+pytest.xml
