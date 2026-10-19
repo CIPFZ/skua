@@ -46,9 +46,10 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 6 全部完成（SPEC 3.1 两项修正、structural.py、rule_decoder.py），待项目所有者验收
+- 批次 6 已验收。批次 7 进行中：struct 带符号 z（已完成）→ cli.py → serve/skiplist.py → 端到端测试
 
 ## 已知问题
+- M0 已知限制（SPEC 3.3）：广告块本身是播放列表中最长块的源（短片配长广告）拿不到块级先验，只能靠 daterange；golden 验收报告中单列
 - 2026-10-19 Run 26–27 红：`test_struct_vectors` 写死了本机合成素材的"距最近事件"值，CI（ffmpeg 6.1）的合成码率略有不同，第 2 个镜头起点多出一个事件。已改为由测试从 Timeline 事件独立重算码率相关维度，结构维度仍写死（AGENT.md 6.1：基础测试集不得依赖编码器的具体字节）。CI 新增"失败用例转注解"步骤，匿名可在运行页读到失败断言
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
@@ -58,8 +59,6 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - `check_imports` 只防误用不防恶意：`getattr(os, "system")` 一类反射调用抓不到（项目所有者 2026-10-16 接受）
 
 ## 开放问题（需项目所有者决策）
-- （影响错跳，structural 已按保守一侧实现，待确认）同一 DATERANGE 同时带 CLASS=ad 与 SCTE35-IN 时不构成硬先验（SPEC "IN 永不构成硬先验"优先）
-- （特征口径，待确认）struct 第 9 维 daterange_marker：广告标记（CLASS=ad / OUT，含被 IN 截断后延伸的范围之外的锚点本身）与 SCTE35-CMD 记 1，只带 SCTE35-IN 记 0
 - golden 来源是否有 fMP4、是否需要请求头：项目所有者稍后答复
 
 ## ADR 列表
@@ -90,6 +89,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
+- structural（SPEC 3.3 v0.4）：duration_outlier 与 bitrate_outlier 两维取所覆盖分片中 |z| 最大者并保留符号（列名改为 `duration_outlier_z` / `bitrate_outlier_z`）。struct 仍是 10 维 float32，FEATURE_SCHEMA 不变；尚无任何非测试代码写过 parquet，所以不升 SCHEMA_VERSION
 - structural：只读 Timeline；分片之间靠 unit 关联。块 = 起点 unit 带 discontinuity 事件的镜头开始的一段；块起点的 discontinuity / video_params 按 unit 判断，struct 前 4 维按"事件 ts 在镜头起点 ±0.5 s"判断（SPEC 3.3）；duration / bitrate 取所覆盖 unit 的最大 |z|
 - structural：URI 签名被禁用时不产出任何 uri_pattern_break，"块内所有分片均命中"自然不成立，块级先验因此整体失效，与 SPEC 3.3 等价，不需额外标志
 - structural：几个块并列最长时都算"最大块"（先验更少，偏保守）；首个块没有 discontinuity，永远得不到块级先验

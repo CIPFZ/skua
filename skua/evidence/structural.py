@@ -26,10 +26,10 @@ STRUCT_FIELDS: tuple[str, ...] = (
     "start_pts_jump",
     "start_video_params",
     "start_audio_params",
-    "duration_outlier_max_abs_z",
+    "duration_outlier_z",
     "uri_pattern_break",
     "key_change",
-    "bitrate_outlier_max_abs_z",
+    "bitrate_outlier_z",
     "log1p_nearest_event_s",
     "daterange_marker",
 )
@@ -130,9 +130,11 @@ def _at_start(shot: Shot, events: Iterable[Event], kind: str, window: float) -> 
     return any(ev.kind == kind and abs(ev.ts - shot.start) <= window for ev in events)
 
 
-def _max_abs_z(shot: Shot, by_unit: dict[str, list[Event]]) -> float:
-    zs = [abs(float(ev.payload["z"])) for u in shot.source_units for ev in by_unit.get(u, [])]
-    return max(zs, default=0.0)
+def _signed_extreme_z(shot: Shot, by_unit: dict[str, list[Event]]) -> float:
+    """The z of largest magnitude, sign kept: short segments and low bitrates (typical ads)
+    must not look like the high-bitrate GOP head of a content block (SPEC 3.3)."""
+    zs = [float(ev.payload["z"]) for u in shot.source_units for ev in by_unit.get(u, [])]
+    return max(zs, key=abs, default=0.0)
 
 
 def _hit(shot: Shot, by_unit: dict[str, list[Event]]) -> bool:
@@ -293,10 +295,10 @@ def struct_features(tl: Timeline, config: StructuralConfig = CONFIG) -> list[Sho
             _at_start(shot, events, "pts_jump", w),
             _at_start(shot, events, "video_params", w),
             _at_start(shot, events, "audio_params", w),
-            _max_abs_z(shot, dur_z),
+            _signed_extreme_z(shot, dur_z),
             _hit(shot, breaks),
             _hit(shot, keys),
-            _max_abs_z(shot, bitrate),
+            _signed_extreme_z(shot, bitrate),
             math.log1p(_nearest_event_s(shot, event_ts, tl.duration)),
             any(u in marks for u in shot.source_units),
         ]

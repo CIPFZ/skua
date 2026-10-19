@@ -139,13 +139,13 @@ def expected_rate_dims(tl: Timeline, shot: Shot) -> tuple[float, float]:
     local 7.0 differ), so tests derive these two dims instead of hard-coding them.
     """
     zs = [
-        abs(float(e.payload["z"]))
+        float(e.payload["z"])
         for e in tl.container_events
         if e.kind == "bitrate_outlier" and e.payload["unit"] in shot.source_units
     ]
     stamps = [e.ts for e in [*tl.playlist_events, *tl.container_events]]
     nearest = min((abs(t - shot.start) for t in stamps), default=tl.duration)
-    return max(zs, default=0.0), math.log1p(nearest)
+    return max(zs, key=abs, default=0.0), math.log1p(nearest)
 
 
 def test_struct_vectors(ad_break_tl: Timeline) -> None:
@@ -159,19 +159,47 @@ def test_struct_vectors(ad_break_tl: Timeline) -> None:
         "start_pts_jump": 1.0,
         "start_video_params": 1.0,
         "start_audio_params": 0.0,
-        "duration_outlier_max_abs_z": 0.0,
+        "duration_outlier_z": 0.0,
         "uri_pattern_break": 1.0,
         "key_change": 0.0,
         "daterange_marker": 0.0,
     }
     for shot, feat in zip(ad_break_tl.shots, feats, strict=True):
         bitrate, nearest = expected_rate_dims(ad_break_tl, shot)
-        assert feat.struct[COL["bitrate_outlier_max_abs_z"]] == pytest.approx(bitrate, rel=1e-6)
+        assert feat.struct[COL["bitrate_outlier_z"]] == pytest.approx(bitrate, rel=1e-6)
         assert feat.struct[COL["log1p_nearest_event_s"]] == pytest.approx(nearest, rel=1e-6)
-    # Every segment of the ad body is far below the stream's bitrate in any environment.
-    assert feats[13].struct[COL["bitrate_outlier_max_abs_z"]] > 3
+    # Every segment of the ad body is far below the stream's bitrate in any environment, and
+    # the sign says so (low, not high).
+    assert feats[13].struct[COL["bitrate_outlier_z"]] < -3
     assert feats[12].struct[COL["log1p_nearest_event_s"]] == 0.0  # events at the ad head
     features_to_table(feats)  # valid FEATURE_SCHEMA rows
+
+
+def test_outlier_dims_keep_the_sign_of_the_largest_magnitude() -> None:
+    tl = make_tl(
+        [4.0] * 6,
+        [
+            (1, "bitrate_outlier", {"z": -7.5, "bps": 1}),
+            (2, "bitrate_outlier", {"z": 5.0, "bps": 1}),
+            (3, "duration_outlier", {"z": -12.0}),
+        ],
+    )
+    feats = struct_features(tl)
+    assert feats[1].struct[COL["bitrate_outlier_z"]] == -7.5
+    assert feats[2].struct[COL["bitrate_outlier_z"]] == 5.0
+    assert feats[3].struct[COL["duration_outlier_z"]] == -12.0
+    assert feats[0].struct[COL["bitrate_outlier_z"]] == 0.0
+
+
+def test_largest_magnitude_wins_within_a_multi_unit_shot() -> None:
+    from skua.evidence.structural import _signed_extreme_z
+
+    shot = Shot(0, 0.0, 8.0, [4.0], ["a.ts", "b.ts"])
+    by_unit = {
+        "a.ts": [ContainerEvent(0.0, "bitrate_outlier", {"unit": "a.ts", "z": 4.0})],
+        "b.ts": [ContainerEvent(4.0, "bitrate_outlier", {"unit": "b.ts", "z": -6.0})],
+    }
+    assert _signed_extreme_z(shot, by_unit) == -6.0  # type: ignore[arg-type]
 
 
 # --- event attribution -----------------------------------------------------------------------
