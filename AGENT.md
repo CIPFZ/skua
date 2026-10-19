@@ -121,6 +121,10 @@
 ### 6.1 Fixture 优先
 
 - 测试不得访问网络、不得依赖真实媒体。`tests/fixtures/synth/` 下用 ffmpeg 合成测试视频：彩条 + 正弦音做"正片"，纯色闪烁 + 白噪声做"广告"，`scripts/make_synth.py` 生成，参数化时长、分辨率、是否插入 `DISCONTINUITY`。
+- 合成素材的视频编码器默认 `mpeg2video`（所有 ffmpeg 构建自带，支持 B 帧，MPEG-2 in TS 是标准组合），音频 ffmpeg 内置 `aac`。基础测试集在任何环境下使用同一编码器、断言同一结果，不按环境切换断言。
+- H.264 特有的检查（profile / level / SPS 解析、`video_params` 对 H.264 字段的比较）单独成组，打 `@pytest.mark.h264`，`libx264` 不可用时跳过；CI 必须安装 libx264 并执行该组，本地跳过不算失败。
+- 编码器可用性必须通过实际编码一小段来探测，不能只看 `ffmpeg -encoders` 列表（dlopen 构建会列出但运行时缺库）。探测结果写入合成产物旁的 `manifest.json` 并打印到 stderr。
+- 不在本机私装 ffmpeg、编码器库或任何外部二进制来凑测试环境；环境差异一律通过标记与跳过表达。
 - 合成 HLS：`make_synth.py` 同时产出 m3u8 与分片，由 `tests/conftest.py` 用本地 `aiohttp` 服务器在 `127.0.0.1` 随机端口托管。
 - 模型相关测试默认用 `FakeEmbedder`（确定性哈希到向量）；带真实权重的测试标记 `@pytest.mark.model`，CI 默认跳过，本地 `uv run pytest -m model` 跑。
 
