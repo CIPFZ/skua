@@ -27,7 +27,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [x] 10.3d `adapter/decode.py`：`probe_segment`（只 demux）/ `param_changes`（video_params、audio_params、pid_change）/ `iter_frames` / `iter_pcm`，支持 AES-128（`crypto:` 协议）；`bitrate_outlier` 需要 EXTINF 与字节数，随批次 5 的 timeline 实现
 
 ### 批次 5 timeline（10.3）
-- [ ] 10.3e `adapter/timeline.py` 与 `adapter/hls.py` 门面
+- [x] 10.3e1 `adapter/timeline.py`：EXTINF 累加 + 首帧 PTS 校正（容差 0.5 s）、DISCONTINUITY 重锚记 `pts_jump(tagged=True)`、无标签跳变记 `tagged=False`、跨分片按最近同余代表展开回绕、不可 demux 分片退回 EXTINF、`video_params` / `audio_params` / `pid_change` / `bitrate_outlier`、播放列表事件按 unit 映射到校正后的轴、M0 每分片一个镜头（关键帧按 SPEC 3.2）
+- [ ] 10.3e2 `adapter/hls.py` 门面：AES 粘合（按 KeyState.uri 取密钥、IV 缺省取媒体序号）、`cache/<media_id>/index.json`
 - [ ] 10.3f 合成 HLS 事件序列 / 时间轴 / PTS 回绕测试，与 ffprobe 真值对比误差在 ±1 帧内
 
 ### 批次 6 structural（10.4）
@@ -45,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 4 已验收。批次 5 进行中：合成产物按内容哈希作键已完成；下一项 timeline.py，然后 hls.py 门面（含 AES 粘合）
+- 批次 5 进行中：合成产物按内容哈希作键、timeline.py 已完成；下一项 hls.py 门面（含 AES 粘合）
 
 ## 已知问题
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
@@ -86,6 +87,10 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
+- timeline：分片长度取实测跨度（末包 pts + duration − 最早 pts），与 EXTINF 相差超过容差时不信实测、用 EXTINF；分片起点在同一 PTS 段内取 PTS 推算值，与 EXTINF 累加值相差超过容差时记无标签 `pts_jump` 并在累加值处重锚；DISCONTINUITY 处总是在累加值处重锚，前一分片可 demux 时才记 `pts_jump(tagged=True)`（delta 为与前段结束 PTS 的最近同余差）
+- timeline：`bitrate_outlier` 用分片字节数 × 8 / EXTINF，robust z 与 duration_outlier 相同（含 MAD = 0 回退），末片不排除（SPEC 只对 duration_outlier 规定了末片排除）
+- timeline：观察到的合成素材现象：每个单独编码的部分的第一个分片码率偏高（mpeg2 码率控制起步超发），seg000 / seg006 / seg015 被标 `bitrate_outlier`（z ≈ 3.4），广告三片 z ≈ −3.9。bitrate 只进 struct 特征、不构成硬先验，阈值未动
+- timeline：测试真值由 `truth_axis`（测试内的独立纯函数）从 PyAV 读出的原始首帧 PTS 推出，ffprobe 只做一次交叉校验（AGENT.md 6.2）；PTS 校正由"同一段内 0.2 s PTS 空隙"用例覆盖
 - decode：PyAV 打开时一律加 `correct_ts_overflow=0` 读原始时间戳。libav 默认的溢出校正会把回绕前的包报成负数，而且随 libav 版本变化；分片内回绕由 `unwrap`（取模 2^33 后与锚点最近的代表）展开，跨分片的展开留给 timeline。已验证：PyAV 18.1（捆绑 FFmpeg 8）的原始值与系统 ffprobe 7.0.2 的值模 2^33 全部一致，包括 AES 解密后的分片
 - decode：分片的 `first_pts` 取参考流（首个视频流，没有则音频流）所有包里最早的展示时间，不是第一个包的 pts（open GOP 的前导 B 帧先显示）；合成素材是 closed GOP，所以这一点由 `pts_extent` 的单元测试覆盖
 - decode：`video_params` 比较 codec / width / height / profile / level / pix_fmt / 平均帧率，`audio_params` 比较 codec / sample_rate / channels / profile（SPEC 3.1，不比 extradata）；`pid_change` 比较 (PID, 媒体类型) 集合。payload 带 changed、before、after，不带 unit（由 timeline 补）

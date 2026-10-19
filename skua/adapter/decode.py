@@ -25,6 +25,8 @@ from av.audio.resampler import AudioResampler
 from av.container import InputContainer
 from av.video.frame import VideoFrame
 
+from skua.schema import ContainerEventKind
+
 log = logging.getLogger("skua.adapter")
 
 PTS_WRAP = 2**33  # 33-bit PTS/DTS in MPEG-TS
@@ -205,14 +207,17 @@ def _as_dict(params: VideoParams | AudioParams | None) -> dict[str, Any] | None:
     return {f.name: getattr(params, f.name) for f in fields(params)}
 
 
-def param_changes(prev: DemuxProbe, cur: DemuxProbe) -> list[tuple[str, dict[str, Any]]]:
+def param_changes(
+    prev: DemuxProbe, cur: DemuxProbe
+) -> list[tuple[ContainerEventKind, dict[str, Any]]]:
     """Container events between two consecutive segments: ``(kind, payload)`` without ``unit``
     (the caller knows the segment). Kinds: video_params, audio_params, pid_change (SPEC 3.1)."""
-    out: list[tuple[str, dict[str, Any]]] = []
-    for kind, before, after in (
+    out: list[tuple[ContainerEventKind, dict[str, Any]]] = []
+    pairs: tuple[tuple[ContainerEventKind, VideoParams | AudioParams | None, Any], ...] = (
         ("video_params", prev.video, cur.video),
         ("audio_params", prev.audio, cur.audio),
-    ):
+    )
+    for kind, before, after in pairs:
         changed = _changed(before, after)
         if changed:
             out.append(
