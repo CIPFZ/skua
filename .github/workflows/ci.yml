@@ -47,6 +47,21 @@ jobs:
           SKUA_REQUIRE_H264: "1"
         run: uv run pytest
 
+      - name: H.264 group executed (not skipped)
+        env:
+          SKUA_REQUIRE_H264: "1"
+        run: |
+          uv run pytest -m h264 -q --junitxml=h264.xml
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import sys
+          import xml.etree.ElementTree as ET
+          s = ET.parse("h264.xml").getroot().find("testsuite")
+          n, skipped = int(s.get("tests")), int(s.get("skipped"))
+          bad = int(s.get("failures")) + int(s.get("errors"))
+          print(f"h264 group: {n} tests, {skipped} skipped, {bad} failed")
+          sys.exit(0 if n > 0 and skipped == 0 and bad == 0 else 1)
+          PY
+
       - name: Check secrets
         run: scripts/check_secrets.sh --commits all
 

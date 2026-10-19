@@ -52,3 +52,6 @@ assets/icon/skua-icon-pack.zip
 .DS_Store
 .idea/
 .vscode/
+
+# CI junit output
+h264.xml

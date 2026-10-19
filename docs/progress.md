@@ -18,7 +18,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 
 ### 批次 3 proc / synth / playlist（10.3、10.1d）
 - [x] 10.3a `adapter/proc.py`：`AllowedCommand`（FFMPEG、FFPROBE）与 `run`；参数只收 list[str]、stdin 关闭、超时强杀、错误信息与日志不含 URL（`redact_urls` / `host_hash`）
-- [x] 10.1d `scripts/make_synth.py`：mpeg2video + aac 合成 C1 | D C2 | D AD | D C3（AD 换分辨率 / PID / URI 模板，C3 内发生 33 位回绕），另有 same-uri 反例与 tiny 布局；试编码探测结果打印到 stderr 并写入 `manifest.json`；`@pytest.mark.h264` 组用 libx264 断言同样的结构，CI 设 `SKUA_REQUIRE_H264=1`，该组若被跳过即判失败
+- [x] 10.1d `scripts/make_synth.py`：mpeg2video + aac 合成 C1 | D C2 | D AD | D C3（AD 换分辨率 / PID / URI 模板，C3 内发生 33 位回绕），另有 same-uri 反例与 tiny 布局；试编码探测结果打印到 stderr 并写入 `manifest.json`；`@pytest.mark.h264` 组用 libx264 断言同样的结构，CI 设 `SKUA_REQUIRE_H264=1`，该组若被跳过即判失败；CI 另有一步单独跑 `-m h264` 并用 junit 断言 tests>0、skipped=0，结果写入 job summary（匿名访问看不到 Actions 日志，所以由步骤成功本身证明该组执行过）
 - [ ] 10.3b `adapter/playlist.py`：五种 PlaylistEvent 与签名函数
 
 ### 批次 4 fetch / decode（10.3）
