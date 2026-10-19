@@ -132,12 +132,29 @@ def test_synth_aes_keys_show_up_in_struct(synth_aes: SynthResult, tmp_path: Path
     assert keyed == [12, 15]  # clear ad, then key k2
 
 
+def expected_rate_dims(tl: Timeline, shot: Shot) -> tuple[float, float]:
+    """Independent re-derivation of the encoder-dependent dims from the Timeline's events.
+
+    Bitrate outliers depend on the exact bytes the encoder produced (CI's ffmpeg 6.1 and a
+    local 7.0 differ), so tests derive these two dims instead of hard-coding them.
+    """
+    zs = [
+        abs(float(e.payload["z"]))
+        for e in tl.container_events
+        if e.kind == "bitrate_outlier" and e.payload["unit"] in shot.source_units
+    ]
+    stamps = [e.ts for e in [*tl.playlist_events, *tl.container_events]]
+    nearest = min((abs(t - shot.start) for t in stamps), default=tl.duration)
+    return max(zs, default=0.0), math.log1p(nearest)
+
+
 def test_struct_vectors(ad_break_tl: Timeline) -> None:
     feats = struct_features(ad_break_tl)
     assert len(feats) == 21 and all(f.struct.shape == (10,) for f in feats)
     assert all(f.struct.dtype == np.float32 for f in feats)
     ad0 = dict(zip(STRUCT_FIELDS, feats[12].struct.tolist(), strict=True))
-    assert ad0 == {
+    # Structural dims are fixed by the layout and identical in every environment.
+    assert {k: ad0[k] for k in STRUCT_FIELDS if "bitrate" not in k and "nearest" not in k} == {
         "start_discontinuity": 1.0,
         "start_pts_jump": 1.0,
         "start_video_params": 1.0,
@@ -145,13 +162,15 @@ def test_struct_vectors(ad_break_tl: Timeline) -> None:
         "duration_outlier_max_abs_z": 0.0,
         "uri_pattern_break": 1.0,
         "key_change": 0.0,
-        "bitrate_outlier_max_abs_z": 0.0,  # the ad's block head is not a bitrate outlier
-        "log1p_nearest_event_s": 0.0,
         "daterange_marker": 0.0,
     }
-    ad1 = feats[13].struct
-    assert ad1[COL["bitrate_outlier_max_abs_z"]] > 3 and ad1[COL["start_discontinuity"]] == 0
-    assert feats[2].struct[COL["log1p_nearest_event_s"]] == pytest.approx(math.log1p(8.0))
+    for shot, feat in zip(ad_break_tl.shots, feats, strict=True):
+        bitrate, nearest = expected_rate_dims(ad_break_tl, shot)
+        assert feat.struct[COL["bitrate_outlier_max_abs_z"]] == pytest.approx(bitrate, rel=1e-6)
+        assert feat.struct[COL["log1p_nearest_event_s"]] == pytest.approx(nearest, rel=1e-6)
+    # Every segment of the ad body is far below the stream's bitrate in any environment.
+    assert feats[13].struct[COL["bitrate_outlier_max_abs_z"]] > 3
+    assert feats[12].struct[COL["log1p_nearest_event_s"]] == 0.0  # events at the ad head
     features_to_table(feats)  # valid FEATURE_SCHEMA rows
 
 

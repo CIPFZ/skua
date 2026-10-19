@@ -49,6 +49,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - 批次 6 进行中：structural.py 已完成；下一项 rule_decoder.py
 
 ## 已知问题
+- 2026-10-19 Run 26–27 红：`test_struct_vectors` 写死了本机合成素材的"距最近事件"值，CI（ffmpeg 6.1）的合成码率略有不同，第 2 个镜头起点多出一个事件。已改为由测试从 Timeline 事件独立重算码率相关维度，结构维度仍写死（AGENT.md 6.1：基础测试集不得依赖编码器的具体字节）。CI 新增"失败用例转注解"步骤，匿名可在运行页读到失败断言
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
 - 本机没有 `fpcalc`，M0 用不到，M1 开工前需要安装 chromaprint。CI 已安装
 - 本机 ffmpeg 7.0.2 是 `--enable-libopenh264-dlopen` 构建：`-encoders` 列出 libopenh264，但运行时缺 `libopenh264.so.7`，实际无法编码；本机也没有 libx264；TencentOS 4 的 dnf 源中没有 openh264 包。本机实测可用的视频编码器只有 mpeg2video、mpeg4、libaom-av1、libsvtav1。结论：编码器探测必须靠试编码，不能只读 `-encoders` 列表
