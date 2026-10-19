@@ -36,7 +36,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [x] 10.4b `evidence/rule_decoder.py`（M3 删除）：连续硬先验镜头合并为 `Segment(label="ad", confidence=0.95)`；`evidence` = {decoder, hard_prior, sources[]}，每个来源含 source / first_unit / last_unit / duration_s，块来源另含 conditions（起点 discontinuity、起点 video_params、uri 命中数、分片数、≤180 s、是否最大块），daterange 来源另含 daterange（id / class / scte35 / anchored_by / duration_source / closed_by_scte35_in）；测试断言各层字段集合
 
 ### 批次 7 cli / serve（10.5）
-- [ ] 10.5a `cli.py`：`skua scan` 的 `--out` 与 `--json-events`
+- [x] 10.5a `cli.py`：`skua scan <src> --out` / `--json-events` / `--header`（可重复）/ `--cache-dir`；stdout 只有一个 JSON 文档（默认 SkipList，`--json-events` 时为 Timeline），stderr 打印分阶段耗时与冷/热缓存；退出码 0–5 按 SPEC 3.8
 - [ ] 10.5b `serve/skiplist.py`：SQLite 存取
 - [ ] 10.5c 端到端测试：区间误差 ≤ 一个分片
 
@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 6 已验收。批次 7 进行中：struct 带符号 z（已完成）→ cli.py → serve/skiplist.py → 端到端测试
+- 批次 7 进行中：struct 带符号 z、cli.py 已完成；下一项 serve/skiplist.py，然后端到端测试
 
 ## 已知问题
 - M0 已知限制（SPEC 3.3）：广告块本身是播放列表中最长块的源（短片配长广告）拿不到块级先验，只能靠 daterange；golden 验收报告中单列
@@ -89,6 +89,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
+- cli：退出码映射——参数错误（含源文件不存在、`--header` 格式错）1；`UnsupportedPlaylistError` 与不支持的 scheme 2；`AesKeyError`（含 `AesIntegrityError`、密钥长度错）3；`FetchError` 4；其余任何异常 5（不会被当成"无广告"）。typer 0.27 内置 click、默认把参数错误映射为 2，所以 `main()` 以 `standalone_mode=False` 运行并自行映射；click 的 UsageError 经公开的 `typer.BadParameter` 继承链取得，不 import 私有模块
+- cli：stderr 耗时行给出 fetch / analysis / evidence 三段、hot-path（= analysis + evidence，即 M0"单集 < 10 s"按热缓存验收的口径）与 total；本次下载过分片即为 cold，否则 hot（本地源总是 hot）。SkipList 在 `--out` 用 `.part` + rename 原子写入；失败时不写 `--out`、stdout 为空。`skua` 控制台脚本入口为 `skua.cli:run`
 - structural（SPEC 3.3 v0.4）：duration_outlier 与 bitrate_outlier 两维取所覆盖分片中 |z| 最大者并保留符号（列名改为 `duration_outlier_z` / `bitrate_outlier_z`）。struct 仍是 10 维 float32，FEATURE_SCHEMA 不变；尚无任何非测试代码写过 parquet，所以不升 SCHEMA_VERSION
 - structural：只读 Timeline；分片之间靠 unit 关联。块 = 起点 unit 带 discontinuity 事件的镜头开始的一段；块起点的 discontinuity / video_params 按 unit 判断，struct 前 4 维按"事件 ts 在镜头起点 ±0.5 s"判断（SPEC 3.3）；duration / bitrate 取所覆盖 unit 的最大 |z|
 - structural：URI 签名被禁用时不产出任何 uri_pattern_break，"块内所有分片均命中"自然不成立，块级先验因此整体失效，与 SPEC 3.3 等价，不需额外标志

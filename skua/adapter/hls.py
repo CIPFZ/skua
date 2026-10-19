@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,6 +124,9 @@ class HlsSource:
     axis: list[SegmentAxis]
     units: list[DecodeUnit]  # demuxable segments, for iter_frames / iter_pcm
     index_path: Path
+    downloaded: int = 0  # segments fetched over the network in this call (0: hot cache)
+    fetch_s: float = 0.0  # playlists, keys and segments
+    analysis_s: float = 0.0  # integrity check, demux probes, timeline (the hot-cache cost)
 
 
 def iv_hex(key: KeyState, sequence: int) -> str:
@@ -221,6 +225,7 @@ async def open_hls(
     cache_dir = (cache_root or default_cache_root()) / mid
     own = session is None
     client = session or aiohttp.ClientSession()
+    started = time.monotonic()
     try:
         raw = await fetch_bytes(src, client, headers=hdrs, what="playlist", config=config)
         text = raw.decode()
@@ -238,6 +243,7 @@ async def open_hls(
         if own:
             await client.close()
 
+    fetched_at = time.monotonic()
     aes = [_aes_for(seg, keys) for seg in media.segments]
     heads = _check_heads(media.segments, fetched, aes, hls_config)
     probes = [_probe(f, a) for f, a in zip(fetched, aes, strict=True)]
@@ -258,4 +264,13 @@ async def open_hls(
             "undemuxable": sum(p is None for p in probes),
         },
     )
-    return HlsSource(mid, build.timeline, build.axis, units, index_path)
+    return HlsSource(
+        mid,
+        build.timeline,
+        build.axis,
+        units,
+        index_path,
+        downloaded=sum(not f.cached for f in fetched),
+        fetch_s=fetched_at - started,
+        analysis_s=time.monotonic() - fetched_at,
+    )
