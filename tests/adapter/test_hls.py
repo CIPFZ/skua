@@ -21,8 +21,8 @@ from skua.adapter.decode import (
     iter_frames,
 )
 from skua.adapter.fetch import FetchConfig, FetchError, media_id
-from skua.adapter.hls import AesKeyError, iv_hex, open_hls
-from skua.adapter.playlist import KeyState
+from skua.adapter.hls import AesIntegrityError, AesKeyError, iv_hex, key_ranges, open_hls
+from skua.adapter.playlist import KeyState, parse_media_playlist
 from tests.conftest import HlsServer
 
 Serve = Callable[[Path], Awaitable[HlsServer]]
@@ -124,24 +124,92 @@ async def test_keys_never_reach_disk_or_logs(
     assert row["encrypted"] is True
     assert Path(row["path"]).read_bytes() == (synth_aes.out_dir / "seg000.ts").read_bytes()
     assert set(row) == {
-        "index", "sequence", "uri", "path", "bytes", "encrypted",
+        "index", "sequence", "uri", "path", "bytes", "encrypted", "head_crc_ok",
         "start", "length", "origin_pts", "time_base",
     }  # fmt: skip
 
 
-async def test_wrong_media_sequence_breaks_only_implicit_ivs(
-    serve: Serve, synth_aes: SynthResult, tmp_path: Path, caplog: pytest.LogCaptureFixture
+async def test_wrong_media_sequence_aborts_with_the_key_range(
+    serve: Serve, synth_aes: SynthResult, tmp_path: Path
 ) -> None:
-    # Shift EXT-X-MEDIA-SEQUENCE: C1/C2 carry an explicit IV and must not care; C3 relies on
-    # the implicit sequence-number IV and must now fail the head CRC (proves the rule is used).
+    # Shift EXT-X-MEDIA-SEQUENCE: C1/C2 carry an explicit IV and do not care; C3 relies on the
+    # implicit sequence-number IV, so all six C3 heads fail: a range-wide error (SPEC 3.1).
     root = tmp_path / "srv"
     shutil.copytree(synth_aes.out_dir, root)
     pl = root / "index.m3u8"
     pl.write_text(pl.read_text().replace("#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-MEDIA-SEQUENCE:5"))
     server = await serve(root)
-    await open_hls(server.url("index.m3u8"), cache_root=tmp_path / "c", config=FAST)
+    with pytest.raises(AesIntegrityError, match=r"segments 15-20 \(media sequence 20-25") as info:
+        await open_hls(server.url("index.m3u8"), cache_root=tmp_path / "c", config=FAST)
+    assert "6 of 6" in str(info.value) and "127.0.0.1" not in str(info.value)
+
+
+def damage_first_block(path: Path) -> None:
+    data = bytearray(path.read_bytes())
+    data[5] ^= 0xFF  # ciphertext block 1 -> plaintext block 1 garbled
+    path.write_bytes(bytes(data))
+
+
+async def test_one_damaged_segment_only_warns_and_is_marked(
+    serve: Serve, synth_aes: SynthResult, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    root = tmp_path / "srv"
+    shutil.copytree(synth_aes.out_dir, root)
+    damage_first_block(root / "seg003.ts")
+    server = await serve(root)
+    hls = await open_hls(server.url("index.m3u8"), cache_root=tmp_path / "c", config=FAST)
     (record,) = [r for r in caplog.records if "fails its CRC" in r.getMessage()]
-    assert record.__dict__["segments"] == list(range(15, 21))
+    assert record.__dict__["segments"] == [3]
+    heads = [row["head_crc_ok"] for row in json.loads(hls.index_path.read_text())["segments"]]
+    assert heads[3] is False
+    assert all(h is True for i, h in enumerate(heads[:12]) if i != 3)
+    assert heads[12:15] == [None, None, None]  # clear ad
+    assert all(h is True for h in heads[15:])
+    assert len(hls.timeline.shots) == 21  # timing is still usable
+
+
+async def test_two_damaged_segments_in_one_key_range_abort(
+    serve: Serve, synth_aes: SynthResult, tmp_path: Path
+) -> None:
+    root = tmp_path / "srv"
+    shutil.copytree(synth_aes.out_dir, root)
+    damage_first_block(root / "seg003.ts")
+    damage_first_block(root / "seg009.ts")  # C2 shares C1's KEY range (k1, explicit IV)
+    server = await serve(root)
+    with pytest.raises(AesIntegrityError, match=r"segments 0-11 .*2 of 12"):
+        await open_hls(server.url("index.m3u8"), cache_root=tmp_path / "c", config=FAST)
+
+
+async def test_damage_in_two_different_key_ranges_only_warns(
+    serve: Serve, synth_aes: SynthResult, tmp_path: Path
+) -> None:
+    root = tmp_path / "srv"
+    shutil.copytree(synth_aes.out_dir, root)
+    damage_first_block(root / "seg003.ts")  # k1 range
+    damage_first_block(root / "seg016.ts")  # k2 range
+    server = await serve(root)
+    hls = await open_hls(server.url("index.m3u8"), cache_root=tmp_path / "c", config=FAST)
+    heads = [row["head_crc_ok"] for row in json.loads(hls.index_path.read_text())["segments"]]
+    assert [i for i, h in enumerate(heads) if h is False] == [3, 16]
+
+
+async def test_wrong_key_aborts_even_though_probes_fail_first(
+    serve: Serve, synth_aes: SynthResult, tmp_path: Path
+) -> None:
+    # A wrong key also breaks the PKCS7 padding, so demuxing fails outright; the head check
+    # runs independently of the probe and still counts every segment of the range.
+    root = tmp_path / "srv"
+    shutil.copytree(synth_aes.out_dir, root)
+    (root / "keys" / "k2.key").write_bytes(bytes(16))
+    server = await serve(root)
+    with pytest.raises(AesIntegrityError, match=r"segments 15-20 .*6 of 6"):
+        await open_hls(server.url("index.m3u8"), cache_root=tmp_path / "c", config=FAST)
+
+
+def test_key_ranges(synth_aes: SynthResult) -> None:
+    pl = synth_aes.playlist
+    segs = parse_media_playlist(pl.read_text(), str(pl)).segments
+    assert key_ranges(segs) == [(0, 11), (15, 20)]
 
 
 async def test_key_errors(serve: Serve, synth_aes: SynthResult, tmp_path: Path) -> None:

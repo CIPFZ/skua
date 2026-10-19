@@ -94,9 +94,6 @@ class DemuxProbe:
     span_ticks: int  # last pts + duration - first_pts, unwrapped
     packets: int  # reference-stream packets with a timestamp
     starts_with_keyframe: bool
-    # AES only: whether the first decrypted TS packet carries a PSI section with a valid CRC.
-    # None when not encrypted or when the first packet holds no checkable section.
-    head_crc_ok: bool | None = None
 
 
 def unwrap(ticks: int, reference: int) -> int:
@@ -169,6 +166,18 @@ def _decrypted_head(path: Path, aes: AesParams) -> bytes:
         return head[:TS_PACKET]
     finally:
         container.close()
+
+
+def check_decrypted_head(path: Path, aes: AesParams) -> bool | None:
+    """Integrity of an encrypted segment's first block, independent of demuxing.
+
+    False when the first decrypted TS packet fails its PSI CRC or cannot be read at all (a
+    wrong key usually breaks the PKCS7 padding too); None when it holds no checkable section.
+    """
+    try:
+        return head_section_crc_ok(_decrypted_head(path, aes))
+    except DecodeError:
+        return False
 
 
 def pts_extent(packets: Sequence[tuple[int, int]]) -> tuple[int, int]:
@@ -256,7 +265,6 @@ def probe_segment(path: Path, aes: AesParams | None = None) -> DemuxProbe:
             span_ticks=span,
             packets=len(stamped),
             starts_with_keyframe=stamped[0][2],
-            head_crc_ok=head_section_crc_ok(_decrypted_head(path, aes)) if aes else None,
         )
     except av.error.FFmpegError as exc:
         raise DecodeError(f"cannot demux segment {path.name}: {exc}") from None

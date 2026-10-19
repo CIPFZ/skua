@@ -16,7 +16,14 @@ from pathlib import Path
 
 import aiohttp
 
-from skua.adapter.decode import AesParams, DecodeError, DecodeUnit, DemuxProbe, probe_segment
+from skua.adapter.decode import (
+    AesParams,
+    DecodeError,
+    DecodeUnit,
+    DemuxProbe,
+    check_decrypted_head,
+    probe_segment,
+)
 from skua.adapter.fetch import (
     CONFIG as FETCH_CONFIG,
 )
@@ -35,6 +42,7 @@ from skua.adapter.playlist import (
     parse_media_playlist,
     select_variant,
 )
+from skua.adapter.proc import redact_urls
 from skua.adapter.timeline import SegmentAxis, build_timeline
 from skua.schema import Timeline
 
@@ -46,8 +54,64 @@ IV_HEX_CHARS = 32
 _HEX = frozenset("0123456789abcdefABCDEF")
 
 
+@dataclass(frozen=True)
+class HlsConfig:
+    """Facade parameters."""
+
+    # SPEC 3.1: this many CRC failures within one EXT-X-KEY range mean the key or IV rule is
+    # wrong for the whole range; open_hls refuses rather than let corrupt data reach features
+    # or the fingerprint store. A single failure is only a warning.
+    crc_failures_to_abort: int = 2
+
+
+HLS_CONFIG = HlsConfig()
+
+
 class AesKeyError(RuntimeError):
     """An AES-128 key could not be obtained or is malformed."""
+
+
+class AesIntegrityError(AesKeyError):
+    """Decrypted data of a whole EXT-X-KEY range fails its integrity check."""
+
+
+def key_ranges(segments: Sequence[PlaylistSegment]) -> list[tuple[int, int]]:
+    """Maximal runs ``(first, last)`` of consecutive segments under one identical EXT-X-KEY."""
+    ranges: list[tuple[int, int]] = []
+    for i, seg in enumerate(segments):
+        if seg.key is None:
+            continue
+        if ranges and ranges[-1][1] == i - 1 and segments[i - 1].key == seg.key:
+            ranges[-1] = (ranges[-1][0], i)
+        else:
+            ranges.append((i, i))
+    return ranges
+
+
+def _check_heads(
+    segments: Sequence[PlaylistSegment],
+    fetched: Sequence[FetchedSegment],
+    aes: Sequence[AesParams | None],
+    config: HlsConfig,
+) -> list[bool | None]:
+    heads = [
+        check_decrypted_head(f.path, a) if a is not None else None
+        for f, a in zip(fetched, aes, strict=True)
+    ]
+    for first, last in key_ranges(segments):
+        failed = [i for i in range(first, last + 1) if heads[i] is False]
+        if len(failed) >= config.crc_failures_to_abort:
+            key = segments[first].key
+            uri = redact_urls(key.uri or "") if key else ""
+            raise AesIntegrityError(
+                f"EXT-X-KEY range of segments {first}-{last} (media sequence "
+                f"{segments[first].sequence}-{segments[last].sequence}, key {uri}): "
+                f"{len(failed)} of {last - first + 1} decrypted heads fail their CRC; "
+                "the key or the IV rule is wrong"
+            )
+        if failed:
+            log.warning("decrypted segment head fails its CRC", extra={"segments": failed})
+    return heads
 
 
 @dataclass(frozen=True)
@@ -114,8 +178,12 @@ def _write_index(
     segments: Sequence[PlaylistSegment],
     fetched: Sequence[FetchedSegment],
     axis: Sequence[SegmentAxis],
+    heads: Sequence[bool | None],
 ) -> None:
-    """Adapter segment table (SPEC 3.1). Deliberately no key, IV or key URI."""
+    """Adapter segment table (SPEC 3.1). Deliberately no key, IV or key URI.
+
+    ``head_crc_ok`` false marks a lone damaged encrypted segment: M1 must not fingerprint it.
+    """
     rows = [
         {
             "index": seg.index,
@@ -124,12 +192,13 @@ def _write_index(
             "path": str(f.path),
             "bytes": f.bytes,
             "encrypted": seg.key is not None,
+            "head_crc_ok": head,
             "start": a.start,
             "length": a.length,
             "origin_pts": a.origin_pts,
             "time_base": str(a.time_base) if a.time_base is not None else None,
         }
-        for seg, f, a in zip(segments, fetched, axis, strict=True)
+        for seg, f, a, head in zip(segments, fetched, axis, heads, strict=True)
     ]
     doc = {"format": INDEX_FORMAT, "media_id": mid, "segments": rows}
     tmp = path.with_name(path.name + ".part")
@@ -144,6 +213,7 @@ async def open_hls(
     headers: Mapping[str, str] | None = None,
     session: aiohttp.ClientSession | None = None,
     config: FetchConfig = FETCH_CONFIG,
+    hls_config: HlsConfig = HLS_CONFIG,
 ) -> HlsSource:
     """Open an HLS source (URL or local path, master or media playlist) and build its Timeline."""
     mid = media_id(src)
@@ -169,6 +239,7 @@ async def open_hls(
             await client.close()
 
     aes = [_aes_for(seg, keys) for seg in media.segments]
+    heads = _check_heads(media.segments, fetched, aes, hls_config)
     probes = [_probe(f, a) for f, a in zip(fetched, aes, strict=True)]
     build = build_timeline(mid, media.segments, probes, [f.bytes for f in fetched], media.events)
     units = [
@@ -178,13 +249,7 @@ async def open_hls(
     ]
     cache_dir.mkdir(parents=True, exist_ok=True)
     index_path = cache_dir / "index.json"
-    _write_index(index_path, mid, media.segments, fetched, build.axis)
-    bad_keys = [
-        f.index for f, pr in zip(fetched, probes, strict=True) if pr and pr.head_crc_ok is False
-    ]
-    if bad_keys:
-        # The demux still works (CBC damages one block), but the key or IV rule is wrong.
-        log.warning("decrypted segment head fails its CRC", extra={"segments": bad_keys})
+    _write_index(index_path, mid, media.segments, fetched, build.axis, heads)
     log.info(
         "hls source opened",
         extra={

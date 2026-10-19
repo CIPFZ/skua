@@ -46,7 +46,7 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - [ ] 10.6c `docs/reports/m0-<date>.md` 与项目所有者本机验证命令；`git tag m0`
 
 ## 进行中
-- 批次 5 全部完成（合成产物按哈希作键、timeline.py、hls.py 含 AES 粘合），待项目所有者验收
+- 批次 5 已验收。SPEC 3.1 修正进行中：CRC 失败按 KEY 范围升级（已完成）→ bitrate MAD 基准排除块首片 → 批次 6
 
 ## 已知问题
 - 已知盲区：开放 GOP（前导 B 帧先于关键帧显示）只由 `pts_extent` 纯函数单元测试覆盖；合成素材是 closed GOP，本机 mpeg2video 做不出前导 B 帧。真实开放 GOP 源要到 M0 golden 验收时才第一次被真正测到
@@ -87,7 +87,8 @@ CI 状态：绿至 f9c78d4。自 AGENT.md 4.1 起一次推送一个提交，每�
 - playlist：以下 DATERANGE 告警后跳过，不产出事件（宁可漏报）：START-DATE 映射不到本列表任何分片；START-DATE 无时区偏移；首个 PDT 之前的分片不可映射（不向前外推）。DURATION=0 视为时间点，只覆盖包含 START-DATE 的分片
 - playlist：事件按 (ts, 种类) 排序，满足 Timeline 的有序要求；DATERANGE 对每个被覆盖的分片各发一个事件，`unit` 为该分片
 - 合成素材：`ad-break-marked` 布局（10 s 广告，4 + 4 + 2 s，带 PDT 与 DATERANGE CLASS="ad"）提供 daterange 与 duration_outlier 的合成正例；DATERANGE 标签放在列表头部（挂在 seg000 上），START-DATE 指向广告，测试同时验证去掉 PDT 后会退化到 seg000–002
-- hls / decode：AES-CBC 用错 IV 只破坏首个 16 字节块，libav 会越过它重新同步，demux 照样成功——错 IV 本来是静默的。为此 decode 对加密分片读取解密后的首个 TS 包（PyAV `data` 格式读原始字节），校验其中 PSI 表段（PID ≤ 0x1F）的 CRC32/MPEG-2，结果放在 `DemuxProbe.head_crc_ok`；hls 对 False 的分片告警但不丢弃（时间信息仍然有效）。测试用"把 EXT-X-MEDIA-SEQUENCE 改成 5"证明：显式 IV 的 C1/C2 不受影响，依赖隐式 IV 的 C3 六片全部校验失败
+- hls / decode：AES-CBC 用错 IV 只破坏首个 16 字节块，libav 会越过它重新同步，demux 照样成功——错 IV 本来是静默的。decode 对每个加密分片单独读取解密后的首个 TS 包（PyAV `data` 格式读原始字节），校验其中 PSI 表段（PID ≤ 0x1F）的 CRC32/MPEG-2（`check_decrypted_head`，读取失败也算失败）。这个检查独立于 demux：错的密钥通常连 PKCS7 填充都通不过、demux 直接失败，若把检查放在 demux 之后就会漏计
+- hls（SPEC 3.1）：KEY 范围 = 连续且 EXT-X-KEY 完全相同的分片段；同一范围内 CRC 失败 ≥ 2 片（`HlsConfig.crc_failures_to_abort`）时 `open_hls` 抛 `AesIntegrityError`，消息给出分片区间、媒体序号区间与脱敏后的 KEY URI；恰好 1 片失败只告警，并在 index.json 记 `head_crc_ok=false`（清流分片与无可校验表段的分片为 null），M1 指纹入库须跳过 false 的分片。注意：只覆盖一个分片的 KEY 范围最多失败 1 片，按规则永远不会升级
 - hls：KEY URI 相对于所选媒体播放列表解析（`KeyState.absolute_uri`），同一 URI 只取一次；密钥长度不是 16 字节或取不到时直接报错，不退化
 - timeline：分片长度取实测跨度（末包 pts + duration − 最早 pts），与 EXTINF 相差超过容差时不信实测、用 EXTINF；分片起点在同一 PTS 段内取 PTS 推算值，与 EXTINF 累加值相差超过容差时记无标签 `pts_jump` 并在累加值处重锚；DISCONTINUITY 处总是在累加值处重锚，前一分片可 demux 时才记 `pts_jump(tagged=True)`（delta 为与前段结束 PTS 的最近同余差）
 - timeline：`bitrate_outlier` 用分片字节数 × 8 / EXTINF，robust z 与 duration_outlier 相同（含 MAD = 0 回退），末片不排除（SPEC 只对 duration_outlier 规定了末片排除）
